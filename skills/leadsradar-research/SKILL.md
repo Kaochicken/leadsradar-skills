@@ -1,7 +1,7 @@
 ---
 name: leadsradar-research
 title: 探栗·随手调研
-version: 1.0.0
+version: 1.1.0
 status: available
 description: 探栗（LeadsRadar 浏览器插件）随手调研：发作品链接/账号链接/关键词/截图，立刻得到小红书·抖音的客户线索与赛道洞察。用户说「探栗」「线索雷达」「探一下/探一探」即指本技能
 requires:
