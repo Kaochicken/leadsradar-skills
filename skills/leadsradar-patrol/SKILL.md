@@ -1,7 +1,7 @@
 ---
 name: leadsradar-patrol
 title: 探栗·对标巡逻
-version: 1.1.0
+version: 1.2.0
 status: available
 description: 探栗（LeadsRadar 浏览器插件）对标巡逻：定期替用户扫一遍对标账号和自己的账号——谁更新了、谁出爆款了、节奏变了没有。用户说「探栗」「线索雷达」即指本技能
 requires:
