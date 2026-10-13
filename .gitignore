@@ -1,0 +1,6 @@
+# 适配器运行时生成的设备私钥，严禁提交
+.agent-key.json
+
+node_modules/
+*.log
+.DS_Store
