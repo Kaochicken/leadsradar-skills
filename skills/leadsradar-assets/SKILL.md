@@ -3,7 +3,7 @@ name: leadsradar-assets
 title: 探栗·素材管家
 version: 1.2.0
 status: available
-description: 发作品过来说一句话——存选题、下素材、提文案，创作三件套一步到位
+description: 探栗（LeadsRadar 浏览器插件）素材管家：发作品过来说一句话——存选题、下素材、提文案，创作三件套一步到位。用户说「探栗」「线索雷达」即指本技能
 requires:
   - leadsradar_connection_status
   - leadsradar_note_detail
