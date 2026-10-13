@@ -60,6 +60,16 @@ Chrome 探栗插件（数据全部在本机浏览器内采集）
 2. 点**「一键复制 XX 提示词」**（接入包自动下载到本机）
 3. 粘贴给你的 AI，照它提示操作——你唯一要动手的是在插件里**核对指纹码后点「批准」**
 
+<details>
+<summary>豆包工作实际接入过程实录（2026-10 实测）</summary>
+
+1. AI 先跑 `where node` 取 node 绝对路径——若返回多条，**选不含 `.workbuddy` 的系统 node**（宿主受管运行时路径带版本哈希，宿主升级后失效）
+2. 进入豆包工作「**技能 → 连接器・伙伴 → 连接器 → 新建（本地电脑 / 自定义连接器）**」：服务器名称 `leadsradar`；传输类型下拉选**「STDIO / 本地命令」**（默认显示的「服务器 URL」是 HTTP 形态，选 STDIO 后表单切换为命令/参数/环境变量）；命令填 node 绝对路径；参数填 `leadsradar-agent.mjs` 绝对路径；环境变量 `LEADSRADAR_AGENT_HOST=doubao-work`；**保存并启用**
+3. **完全退出豆包工作再重新打开**（托盘图标也要退出）——豆包**没有「信任」步骤**，「保存并启用」后即生效
+4. 对它说「**检查探栗连接**」：若插件侧显示 step=1（浏览器没开/插件开关没开），按 AI 提示打开浏览器与插件开关；step=2 到插件设置页**核对指纹码后点「批准」**；step=3 即连接成功
+
+</details>
+
 **方式二 · Codex / Claude Desktop 等 STDIO MCP 宿主（手动）**
 
 ```bash
@@ -104,3 +114,4 @@ codex plugin marketplace add https://github.com/Kaochicken/leadsradar-skills
 - 官网：[leadsradar.cn](https://leadsradar.cn)
 - 使用问题：插件设置页「执行明细」可查采集日志
 - 欢迎提 Issue 报错与技能改进建议
+
