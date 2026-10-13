@@ -3,7 +3,7 @@ name: leadsradar-insights
 title: 探栗·数据问答
 version: 1.2.0
 status: available
-description: 张口就问——历史报告、选题仓库、监控、档案、日报，AI 直接读插件数据回答
+description: 探栗（LeadsRadar 浏览器插件）数据问答：张口就问——历史报告、选题仓库、监控、档案、日报，AI 直接读探栗插件数据回答。用户说「探栗」「线索雷达」即指本技能
 requires:
   - leadsradar_connection_status
   - leadsradar_query_local_data
