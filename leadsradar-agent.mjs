@@ -3734,30 +3734,55 @@ import {
   createPrivateKey
 } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { createServer as createHttpServer } from "node:http";
 var __dirname = dirname(fileURLToPath(import.meta.url));
 var PORT = Number(process.env.LEADSRADAR_AGENT_PORT) || 17373;
 var PROTOCOL_VERSION = "3";
-var ADAPTER_VERSION = "1.0.0";
-var KEY_FILE = join(__dirname, ".agent-key.json");
+var ADAPTER_VERSION = "1.2.9";
 var HOST_LABELS = {
   "doubao-work": "\u8C46\u5305\u5DE5\u4F5C",
+  // ⭐r85 字节系多客户端实测（用户已验证豆包客户端支持 stdio 连接器，与豆包工作同源）：
+  // 每客户端一个 HOST 值 → 密钥分文件（指纹独立可配对）+ 适配器侧异宿主卫星共存（同开不互踢）；
+  // 插件侧 doubao 独立宿主（批准卡跟胶囊走），设备名靠此处区分
+  doubao: "\u8C46\u5305",
+  feishu: "\u98DE\u4E66",
   workbuddy: "WorkBuddy",
+  "kimi-work": "KimiWork",
+  coze: "\u6263\u5B50",
+  // ⭐r93 DeepSeek Harness（dsh）：一切皆插件架构，MCP 走官方 dsh-mcp-client（stdio），工具名带 mcp__leadsradar__ 前缀
+  dsh: "DeepSeek",
   codex: "Codex",
   claude: "Claude"
 };
 var HOST = (process.env.LEADSRADAR_AGENT_HOST || "doubao-work").toLowerCase();
+var HTTP_MODE = process.argv.includes("--http") || process.env.LEADSRADAR_AGENT_HTTP === "1";
+var HTTP_PORT = Number(process.env.LEADSRADAR_AGENT_HTTP_PORT) || 17374;
 var DEVICE_NAME = process.env.LEADSRADAR_AGENT_DEVICE_NAME || `\u63A2\u6817 Agent (${HOST_LABELS[HOST] || "\u672C\u673A"})`;
 var DEVICE_ID = `leadsradar-agent-${HOST.replace(/[^a-z0-9-]/g, "") || "local"}`;
+var KEY_FILE = join(homedir(), `.leadsradar-agent-key-${HOST}.json`);
+var LEGACY_KEY_FILE = join(__dirname, ".agent-key.json");
 function log(...args) {
   process.stderr.write(args.join(" ") + "\n");
 }
 function loadOrCreateKeys() {
-  if (existsSync(KEY_FILE)) {
-    const saved = JSON.parse(readFileSync(KEY_FILE, "utf8"));
-    if (saved.publicKey && saved.privateKey) return saved;
+  for (const f of [KEY_FILE, LEGACY_KEY_FILE]) {
+    if (!existsSync(f)) continue;
+    try {
+      const saved = JSON.parse(readFileSync(f, "utf8"));
+      if (!saved.publicKey || !saved.privateKey) continue;
+      if (f !== KEY_FILE) {
+        try {
+          writeFileSync(KEY_FILE, JSON.stringify(saved), "utf8");
+        } catch {
+        }
+      }
+      return saved;
+    } catch {
+    }
   }
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const entry = {
@@ -3797,8 +3822,11 @@ var AgentBroker = class {
     this.awaitingSince = 0;
     this.lastDisconnect = "";
     this.client = null;
+    this.downstreams = /* @__PURE__ */ new Map();
+    this.relay = null;
     let listenAttempts = 0;
     let takeoverSent = false;
+    this.portBlocked = false;
     const requestTakeover = () => {
       try {
         const probe = new import_websocket.default(`ws://127.0.0.1:${PORT}/extension`);
@@ -3818,36 +3846,58 @@ var AgentBroker = class {
       server.on("connection", (ws) => this.handleConnection(ws));
       server.on("error", (err) => {
         if (err?.code === "EADDRINUSE") {
+          if (this.relay) return;
           if (listenAttempts > 20) {
-            log(`[lf-agent] \u7AEF\u53E3 ${PORT} \u6301\u7EED\u88AB\u5360\u7528\u8D85\u8FC7 1 \u5206\u949F\uFF1A\u8BF7\u5173\u95ED\u65E7\u8FDE\u63A5\u5668/\u4F1A\u8BDD\u540E\u91CD\u8BD5\u3002`);
+            log(`[lf-agent] \u7AEF\u53E3 ${PORT} \u6301\u7EED\u5360\u7528\u8D85 1 \u5206\u949F\uFF0C\u964D\u9891\u4E3A\u6BCF 30 \u79D2\u91CD\u8BD5\uFF08\u5360\u7528\u539F\u56E0\u89C1\u4E0A\u65B9\u63A2\u6D4B\u7ED3\u679C\uFF1B\u671F\u95F4 connection_status \u53EF\u67E5 portBlocked\uFF09\u3002`);
+            setTimeout(() => {
+              if (!this.relay) tryListen();
+            }, 3e4);
             return;
           }
           if (!takeoverSent) {
             takeoverSent = true;
-            requestTakeover();
+            void this.probeOccupant(requestTakeover).then((v) => {
+              if (v === "timeout" || v === "closed" || v === "error") {
+                this.portBlocked = true;
+                log(`[lf-agent] \u5360\u7528\u8005\u63A2\u6D4B\u65E0\u5E94\u7B54\uFF08${v}\uFF09\uFF1A\u7AEF\u53E3 ${PORT} bind \u88AB\u62D2\u5374\u65E0\u4EBA\u76D1\u542C\u2014\u2014\u5927\u6982\u7387\u88AB Windows \u52A8\u6001\u7AEF\u53E3\u4FDD\u7559\uFF08Hyper-V/WSL \u6392\u9664\u6BB5\uFF09\u5708\u8D70\uFF0C\u901A\u5E38\u51E0\u5341\u5206\u949F\u5185\u81EA\u52A8\u6062\u590D\uFF0C\u672C\u8FDB\u7A0B\u6301\u7EED\u91CD\u8BD5\u4E2D\u3002\u6C38\u4E45\u6839\u6CBB\uFF08\u7BA1\u7406\u5458 PowerShell\uFF0C\u8FD0\u884C\u4E00\u6B21\u5373\u53EF\uFF09\uFF1Anet stop winnat ; netsh int ipv4 add excludedportrange protocol=tcp startport=${PORT} numberofports=1 ; net start winnat`);
+              } else {
+                log(`[lf-agent] \u5360\u7528\u8005\u63A2\u6D4B\u7ED3\u679C\uFF1A${v}\uFF08self=\u672C\u5BBF\u4E3B\u5B64\u513F\u5DF2\u8BF7\u5176\u8BA9\u4F4D / other=\u5F02\u5BBF\u4E3B\u5C06\u8F6C\u536B\u661F\u4E2D\u8F6C\uFF09`);
+              }
+            });
           }
-          log(`[lf-agent] \u7AEF\u53E3 ${PORT} \u88AB\u65E7\u5B9E\u4F8B\u5360\u7528\uFF0C\u5DF2\u53D1\u9001\u63A5\u7BA1\u8BF7\u6C42\uFF0C3 \u79D2\u540E\u91CD\u8BD5\u7ED1\u5B9A\uFF08${listenAttempts}/20\uFF09\u2026`);
+          log(`[lf-agent] \u7AEF\u53E3 ${PORT} \u88AB\u5360\u7528\uFF0C3 \u79D2\u540E\u91CD\u8BD5\u7ED1\u5B9A\uFF08${listenAttempts}/20\uFF09\u2026`);
           try {
             server.close();
           } catch {
           }
-          setTimeout(tryListen, 3e3);
+          setTimeout(() => {
+            if (!this.relay) tryListen();
+          }, 3e3);
         } else {
           log(`[lf-agent] Broker error: ${err?.message}`);
         }
       });
     };
     const tryListen = () => {
+      if (this.relay) return;
       listenAttempts += 1;
       const server = new import_websocket_server.default({ host: "127.0.0.1", port: PORT, path: "/extension" }, () => {
         listenAttempts = 0;
         this.portBound = true;
+        this.portBlocked = false;
         this.wss = server;
         log(`[lf-agent] Broker \u5DF2\u76D1\u542C ws://127.0.0.1:${PORT}/extension`);
         log(`[lf-agent] \u8BBE\u5907\u300C${DEVICE_NAME}\u300D\u6307\u7EB9\uFF1A${fingerprint}`);
         log(`[lf-agent] \u7B49\u5F85\u63D2\u4EF6\u8FDE\u63A5\uFF08\u63D2\u4EF6 \u2192 \u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u63A5\u7BA1 \u2192 \u6253\u5F00\u5F00\u5173\uFF09\u2026`);
       });
       attach(server);
+    };
+    this.retryBindAfterRelayLoss = () => {
+      listenAttempts = 0;
+      takeoverSent = false;
+      setTimeout(() => {
+        if (!this.relay) tryListen();
+      }, 300);
     };
     this.wss = null;
     this.portBound = false;
@@ -3885,9 +3935,15 @@ var AgentBroker = class {
     }, 5e3);
     const pokeHandshake = () => {
       if (sessionReady) return;
-      this.send({ type: "device.hello", protocolVersion: PROTOCOL_VERSION, device: DEVICE });
+      try {
+        ws.send(JSON.stringify({ type: "device.hello", protocolVersion: PROTOCOL_VERSION, device: DEVICE }));
+      } catch {
+      }
       pokeTimer = setTimeout(pokeHandshake, 5e3);
     };
+    setTimeout(() => {
+      if (!joined && !sessionReady) pokeHandshake();
+    }, 1e3);
     ws.on("message", (raw) => {
       let msg;
       try {
@@ -3904,6 +3960,39 @@ var AgentBroker = class {
           }
           setTimeout(() => process.exit(0), 300);
         }
+        return;
+      }
+      if (msg.type === "device.attach") {
+        const attId = String(msg.deviceId || "");
+        const isFamily = attId.startsWith("leadsradar-agent-") && attId !== DEVICE_ID;
+        if (!isFamily || this.relay) {
+          try {
+            ws.send(JSON.stringify({ type: "device.attach.reject", reason: "not-allowed" }));
+            ws.close(1e3, "reject");
+          } catch {
+          }
+          return;
+        }
+        const device = msg.device && typeof msg.device === "object" ? msg.device : { deviceId: attId };
+        ws.__lfDownstreamId = attId;
+        sessionReady = true;
+        if (pokeTimer) clearTimeout(pokeTimer);
+        this.downstreams.set(attId, { ws, device });
+        log(`[lf-agent] \u536B\u661F\u9002\u914D\u5668\u6302\u5165\u4E2D\u8F6C\uFF1A${String(device.displayName || attId)}\u2014\u2014\u4E0E\u672C\u8BBE\u5907\u5171\u4EAB\u540C\u4E00\u6761\u63D2\u4EF6\u8FDE\u63A5`);
+        try {
+          ws.send(JSON.stringify({
+            type: "device.attach.ok",
+            host: HOST,
+            hostLabel: HOST_LABELS[HOST] || HOST,
+            extension: { connected: this.extension.connected, extensionId: this.extension.extensionId }
+          }));
+        } catch {
+        }
+        this.broadcastDevices();
+        return;
+      }
+      if (ws.__lfDownstreamId) {
+        this.handleDownstreamMessage(ws, msg);
         return;
       }
       if (!joined) {
@@ -3945,7 +4034,8 @@ var AgentBroker = class {
           type: "broker.hello",
           protocolVersion: PROTOCOL_VERSION,
           serverName: "LeadsRadar Agent Adapter",
-          devices: [DEVICE]
+          // ⭐r76 devices 聚合：本机设备 + 所有挂着的卫星适配器（插件对每个已配对设备独立验签建会话）
+          devices: [DEVICE, ...[...this.downstreams.values()].map((d) => d.device)]
         });
         return;
       }
@@ -3954,6 +4044,14 @@ var AgentBroker = class {
           this.send({ type: "broker.pong", at: msg.at });
           return;
         case "session.challenge": {
+          const ds = this.downstreams.get(String((msg.challenge || {}).deviceId || ""));
+          if (ds) {
+            try {
+              ds.ws.send(JSON.stringify({ type: "device.challenge", challenge: msg.challenge }));
+            } catch {
+            }
+            return;
+          }
           const c = msg.challenge || {};
           const payload = [
             "mediaclaw-agent",
@@ -3974,6 +4072,14 @@ var AgentBroker = class {
           return;
         }
         case "pairing.awaiting_approval": {
+          const dsPairing = this.downstreams.get(String(msg.deviceId || ""));
+          if (dsPairing) {
+            try {
+              dsPairing.ws.send(JSON.stringify({ type: "device.pairing.awaiting_approval", deviceId: msg.deviceId }));
+            } catch {
+            }
+            return;
+          }
           if (!this.awaitingPairing) {
             this.awaitingPairing = true;
             this.awaitingSince = Date.now();
@@ -3992,23 +4098,51 @@ var AgentBroker = class {
             extensionId: String(msg.extensionId || ""),
             extensionVersion: String(msg.extensionVersion || ""),
             sessionId: String(msg.sessionId || ""),
-            pendingResultCount: Number(msg.pendingResultCount) || 0
+            pendingResultCount: Number(msg.pendingResultCount) || 0,
+            // ⭐r81 P0-3 登录态随握手上报（宿主 connection_status 可见，需登录的动作可动手前预检）；
+            // 旧 hello 无此字段时保留上次值（防重握手瞬间丢登录态）
+            account: msg.account ? { loggedIn: msg.account.loggedIn === true, nickname: String(msg.account.nickname || "") || null } : this.extension.account || null
           };
           log(`[lf-agent] \u5DF2\u8FDE\u63A5\u63D2\u4EF6 ${this.extension.extensionId} v${this.extension.extensionVersion}`);
+          this.notifyDownstreamsExtension(true);
           return;
         }
         case "task.progress": {
           const p = msg.progress || {};
+          const dsProgress = this.downstreams.get(String(msg.deviceId || ""));
+          if (dsProgress) {
+            try {
+              dsProgress.ws.send(JSON.stringify({ type: "device.task.progress", taskId: msg.taskId, progress: msg.progress }));
+            } catch {
+            }
+            return;
+          }
           this.lastProgress.set(String(msg.taskId), p);
           log(`[lf-agent] \u8FDB\u5EA6 ${msg.taskId} ${p.status ?? ""}${p.stage ? "/" + p.stage : ""} ${p.message ?? ""}` + (p.processedCount != null ? ` (${p.processedCount}/${p.totalCount ?? "?"})` : ""));
           return;
         }
         case "task.result": {
           this.send({ type: "task.result.ack", taskId: msg.taskId, deviceId: msg.deviceId });
+          const dsResult = this.downstreams.get(String(msg.deviceId || ""));
+          if (dsResult) {
+            try {
+              dsResult.ws.send(JSON.stringify({ type: "device.task.result", taskId: msg.taskId, response: msg.response }));
+            } catch {
+            }
+            return;
+          }
           this.finishTask(String(msg.taskId), msg.response);
           return;
         }
         case "task.result.start": {
+          const dsStart = this.downstreams.get(String(msg.deviceId || ""));
+          if (dsStart) {
+            try {
+              dsStart.ws.send(JSON.stringify({ type: "device.task.result.start", transferId: msg.transferId, taskId: msg.taskId, charLength: msg.charLength }));
+            } catch {
+            }
+            return;
+          }
           this.transfers.set(String(msg.transferId), {
             taskId: String(msg.taskId),
             charLength: Number(msg.charLength) || 0,
@@ -4017,14 +4151,30 @@ var AgentBroker = class {
           return;
         }
         case "task.result.chunk": {
+          const dsChunk = this.downstreams.get(String(msg.deviceId || ""));
+          if (dsChunk) {
+            try {
+              dsChunk.ws.send(JSON.stringify({ type: "device.task.result.chunk", transferId: msg.transferId, index: msg.index, data: msg.data }));
+            } catch {
+            }
+            return;
+          }
           const bucket = this.transfers.get(String(msg.transferId));
           if (bucket) bucket.chunks.set(Number(msg.index), String(msg.data ?? ""));
           return;
         }
         case "task.result.end": {
+          this.send({ type: "task.result.ack", taskId: msg.taskId, deviceId: msg.deviceId });
+          const dsEnd = this.downstreams.get(String(msg.deviceId || ""));
+          if (dsEnd) {
+            try {
+              dsEnd.ws.send(JSON.stringify({ type: "device.task.result.end", transferId: msg.transferId, taskId: msg.taskId, chunkCount: msg.chunkCount }));
+            } catch {
+            }
+            return;
+          }
           const bucket = this.transfers.get(String(msg.transferId));
           this.transfers.delete(String(msg.transferId));
-          this.send({ type: "task.result.ack", taskId: msg.taskId, deviceId: msg.deviceId });
           if (!bucket) return;
           const count = Number(msg.chunkCount) || bucket.chunks.size;
           let serialized = "";
@@ -4041,6 +4191,16 @@ var AgentBroker = class {
           return;
         }
         case "task.cancel.result":
+          {
+            const dsCancel = this.downstreams.get(String(msg.deviceId || ""));
+            if (dsCancel) {
+              try {
+                dsCancel.ws.send(JSON.stringify({ type: "device.task.cancel.result", taskId: msg.taskId, response: msg.response }));
+              } catch {
+              }
+              return;
+            }
+          }
           this.finishTask(String(msg.taskId), msg.response || { ok: false, canceled: true });
           return;
         default:
@@ -4050,6 +4210,16 @@ var AgentBroker = class {
     ws.on("close", () => {
       if (pokeTimer) clearTimeout(pokeTimer);
       clearInterval(pingTimer);
+      if (ws.__lfDownstreamId) {
+        const goneId = ws.__lfDownstreamId;
+        if (this.downstreams.get(goneId)?.ws === ws) {
+          this.downstreams.delete(goneId);
+          log(`[lf-agent] \u536B\u661F\u9002\u914D\u5668 ${goneId} \u65AD\u5F00\u4E2D\u8F6C`);
+          this.broadcastDevices();
+          this.send({ type: "device.offline", deviceId: goneId });
+        }
+        return;
+      }
       if (this.client === ws) {
         this.client = null;
         this.clientExtensionId = null;
@@ -4057,6 +4227,7 @@ var AgentBroker = class {
           this.extension = { ...this.extension, connected: false };
           this.lastDisconnect = (/* @__PURE__ */ new Date()).toISOString();
           log("[lf-agent] \u63D2\u4EF6\u65AD\u5F00\uFF08\u7B49\u63D2\u4EF6\u81EA\u52A8\u91CD\u8FDE\uFF1B\u82E5\u957F\u65F6\u95F4\u672A\u6062\u590D\uFF0C\u68C0\u67E5\u63D2\u4EF6\u5F00\u5173/\u91CD\u8F7D\u63D2\u4EF6\uFF09");
+          this.notifyDownstreamsExtension(false);
         }
         if (this.awaitingPairing) {
           this.awaitingPairing = false;
@@ -4064,6 +4235,271 @@ var AgentBroker = class {
         }
       }
     });
+  }
+  /* ================= ⭐r76 多宿主中转：主 Broker 侧 ================= */
+  /** 卫星挂入/摘牌后向插件重发 broker.hello（devices 聚合），插件会自动对新设备发起挑战验签、对消失设备清会话 */
+  broadcastDevices() {
+    if (!this.client || this.client.readyState !== this.client.OPEN) return;
+    const devices = [DEVICE, ...[...this.downstreams.values()].map((d) => d.device)];
+    this.send({ type: "broker.hello", protocolVersion: PROTOCOL_VERSION, serverName: "LeadsRadar Agent Adapter", devices });
+  }
+  /** 插件在线状态变化时通知所有卫星（卫星据此维护自己的 extension.connected / step） */
+  notifyDownstreamsExtension(connected) {
+    for (const entry of this.downstreams.values()) {
+      try {
+        entry.ws.send(JSON.stringify({ type: "device.extension.state", connected: connected === true }));
+      } catch {
+      }
+    }
+  }
+  /** 卫星连接发来的消息路由（device.task.start / device.proof / device.task.cancel） */
+  handleDownstreamMessage(ws, msg) {
+    const deviceId = ws.__lfDownstreamId;
+    const entry = this.downstreams.get(deviceId);
+    if (!entry || entry.ws !== ws) return;
+    switch (msg.type) {
+      case "device.task.start":
+        if (!this.client || this.client.readyState !== this.client.OPEN) {
+          try {
+            ws.send(JSON.stringify({ type: "device.task.result", taskId: msg.taskId, response: { ok: false, error: { code: "EXTENSION_NOT_CONNECTED", message: "\u63D2\u4EF6\u5F53\u524D\u672A\u8FDE\u63A5\u4E3B Broker\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5" } } }));
+          } catch {
+          }
+          return;
+        }
+        this.send({ type: "task.start", taskId: String(msg.taskId || ""), deviceId, task: msg.task });
+        log(`[lf-agent] \u4E2D\u8F6C\u4E0B\u53D1\u4EFB\u52A1 ${msg.taskId}\uFF08\u6765\u81EA\u536B\u661F ${deviceId}\uFF09`);
+        return;
+      case "device.task.cancel":
+        this.send({ type: "task.cancel", taskId: String(msg.taskId || ""), deviceId });
+        return;
+      case "device.proof":
+        this.send({
+          type: "session.proof",
+          purpose: msg.purpose,
+          deviceId,
+          challengeId: msg.challengeId,
+          signature: msg.signature
+        });
+        return;
+      default:
+        return;
+    }
+  }
+  /* ================= ⭐r76 多宿主中转：卫星侧 ================= */
+  /**
+   * EADDRINUSE 时探测占用者身份：连上端口等它 poke 的 device.hello。
+   * - 占用者是本宿主旧实例（孤儿）→ takeover 让位（保留 ⭐412 自愈语义）
+   * - 占用者是异宿主家族实例 → 进入卫星中转模式（复用这条连接，不再互踢）
+   * - 探测超时/非家族（可能是旧版本不 poke）→ 降级 takeover（旧版收到会让位）
+   */
+  probeOccupant(fallbackTakeover) {
+    return new Promise((resolve) => {
+      let probe;
+      try {
+        probe = new import_websocket.default(`ws://127.0.0.1:${PORT}/extension`);
+      } catch {
+        resolve("error");
+        return;
+      }
+      let settled = false;
+      const finish = (verdict) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(kill);
+        if (verdict === "other") {
+          this.enterRelayMode(probe);
+        } else {
+          try {
+            probe.send(JSON.stringify({ type: "broker.takeover", fromDeviceId: DEVICE_ID }));
+            setTimeout(() => {
+              try {
+                probe.close(1e3);
+              } catch {
+              }
+            }, 300);
+          } catch {
+          }
+          if (verdict !== "self") fallbackTakeover?.();
+        }
+        resolve(verdict);
+      };
+      const kill = setTimeout(() => {
+        try {
+          probe.terminate();
+        } catch {
+        }
+        finish("timeout");
+      }, 2500);
+      probe.on("message", (raw) => {
+        let msg;
+        try {
+          msg = JSON.parse(raw.toString());
+        } catch {
+          return;
+        }
+        if (msg.type !== "device.hello") return;
+        const occ = String(msg.device?.deviceId || "");
+        if (occ === DEVICE_ID) finish("self");
+        else if (occ.startsWith("leadsradar-agent-")) finish("other");
+        else finish("unknown");
+      });
+      probe.on("open", () => {
+      });
+      probe.on("error", () => finish("timeout"));
+      probe.on("close", () => finish("closed"));
+    });
+  }
+  /** 以卫星身份挂到主 Broker：共享其插件连接，任务经中转双向路由 */
+  enterRelayMode(ws) {
+    this.relay = { ws, host: "", hostLabel: "", extensionConnected: false };
+    this.portBound = false;
+    this.awaitingPairing = false;
+    log(`[lf-agent] \u7AEF\u53E3 ${PORT} \u88AB\u300C\u53E6\u4E00\u5BBF\u4E3B\u300D\u7684\u9002\u914D\u5668\u5360\u7528 \u2192 \u8FDB\u5165\u536B\u661F\u4E2D\u8F6C\u6A21\u5F0F\uFF08\u591A\u5BBF\u4E3B\u5171\u5B58\uFF0C\u4E0D\u518D\u4E92\u8E22\uFF09`);
+    try {
+      ws.send(JSON.stringify({ type: "device.attach", deviceId: DEVICE_ID, device: DEVICE, protocolVersion: PROTOCOL_VERSION }));
+    } catch {
+      this.exitRelayMode();
+      return;
+    }
+    const attachGuard = setTimeout(() => {
+      if (this.relay && this.relay.ws === ws && !this.relay.attached) {
+        log("[lf-agent] \u4E3B Broker \u672A\u5E94\u7B54 device.attach\uFF08\u7591\u4F3C\u65E7\u7248\u672C\uFF09\u2192 \u964D\u7EA7\u4E3A\u63A5\u7BA1\u6A21\u5F0F");
+        try {
+          ws.send(JSON.stringify({ type: "broker.takeover", fromDeviceId: DEVICE_ID }));
+        } catch {
+        }
+        this.exitRelayMode();
+      }
+    }, 3e3);
+    ws.on("message", (raw) => {
+      let msg;
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch {
+        return;
+      }
+      if (msg.type === "device.attach.ok") {
+        clearTimeout(attachGuard);
+        if (!this.relay || this.relay.ws !== ws) return;
+        this.relay.attached = true;
+        this.relay.host = String(msg.host || "");
+        this.relay.hostLabel = String(msg.hostLabel || "");
+        this.relay.extensionConnected = msg.extension?.connected === true;
+        log(`[lf-agent] \u5DF2\u6302\u4E0A\u4E3B Broker\uFF08${this.relay.hostLabel || this.relay.host}\uFF09\uFF1A\u63D2\u4EF6${this.relay.extensionConnected ? "\u5728\u7EBF" : "\u672A\u8FDE\u63A5"}\uFF0C\u672C\u8BBE\u5907\u7ECF\u4E2D\u8F6C\u5BF9\u63D2\u4EF6\u53EF\u89C1`);
+        return;
+      }
+      this.handleRelayMessage(msg);
+    });
+    ws.on("close", () => {
+      if (this.relay?.ws === ws) this.exitRelayMode();
+    });
+    ws.on("error", () => {
+    });
+  }
+  /** 卫星中转断开：回到端口竞争（主 Broker 若已退出，3 秒内自动接管成为新主） */
+  exitRelayMode() {
+    if (!this.relay) return;
+    try {
+      this.relay.ws.terminate();
+    } catch {
+    }
+    this.relay = null;
+    log("[lf-agent] \u4E0E\u4E3B Broker \u7684\u4E2D\u8F6C\u8FDE\u63A5\u65AD\u5F00 \u2192 \u91CD\u65B0\u7ADE\u4E89\u7AEF\u53E3\uFF08\u82E5\u5BF9\u65B9\u5DF2\u9000\u51FA\u4F1A\u81EA\u52A8\u6210\u4E3A\u4E3B Broker\uFF09");
+    this.retryBindAfterRelayLoss?.();
+  }
+  /** 主 Broker 发给卫星的消息处理（挑战签名 / 任务结果 / 插件状态） */
+  handleRelayMessage(msg) {
+    const relay = this.relay;
+    if (!relay) return;
+    switch (msg.type) {
+      case "device.extension.state":
+        relay.extensionConnected = msg.connected === true;
+        if (msg.connected === true && this.awaitingPairing) {
+          this.awaitingPairing = false;
+          log("[lf-agent] \u536B\u661F\u6A21\u5F0F\u5DF2\u590D\u4F4D\u7B49\u5F85\u6279\u51C6\u72B6\u6001");
+        }
+        if (this.extension.connected !== relay.extensionConnected) {
+          this.extension = { ...this.extension, connected: relay.extensionConnected };
+          if (!relay.extensionConnected) this.lastDisconnect = (/* @__PURE__ */ new Date()).toISOString();
+          log(`[lf-agent] \u4E2D\u8F6C\u901A\u77E5\uFF1A\u63D2\u4EF6${relay.extensionConnected ? "\u5DF2\u8FDE\u63A5" : "\u5DF2\u65AD\u5F00"}`);
+        }
+        return;
+      case "device.pairing.awaiting_approval":
+        if (!this.awaitingPairing) {
+          this.awaitingPairing = true;
+          this.awaitingSince = Date.now();
+          log(`[lf-agent] \u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF08\u536B\u661F\u6A21\u5F0F\uFF0C\u7ECF\u4E3B Broker \u4E2D\u8F6C\uFF09`);
+          log(`[lf-agent] \u6307\u7EB9\u6838\u5BF9\uFF1A${fingerprint}`);
+        }
+        return;
+      case "device.challenge": {
+        const c = msg.challenge || {};
+        const payload = [
+          "mediaclaw-agent",
+          String(c.purpose ?? ""),
+          String(c.deviceId ?? ""),
+          String(c.challengeId ?? ""),
+          String(c.nonce ?? ""),
+          String(c.extensionId ?? ""),
+          String(c.protocolVersion ?? PROTOCOL_VERSION)
+        ].join("\n");
+        try {
+          relay.ws.send(JSON.stringify({
+            type: "device.proof",
+            purpose: c.purpose,
+            deviceId: c.deviceId,
+            challengeId: c.challengeId,
+            signature: signPayload(payload)
+          }));
+        } catch {
+        }
+        return;
+      }
+      case "device.task.progress": {
+        const p = msg.progress || {};
+        this.lastProgress.set(String(msg.taskId), p);
+        log(`[lf-agent] \u8FDB\u5EA6\uFF08\u4E2D\u8F6C\uFF09${msg.taskId} ${p.status ?? ""}${p.stage ? "/" + p.stage : ""} ${p.message ?? ""}` + (p.processedCount != null ? ` (${p.processedCount}/${p.totalCount ?? "?"})` : ""));
+        return;
+      }
+      case "device.task.result":
+        this.finishTask(String(msg.taskId), msg.response);
+        return;
+      case "device.task.result.start":
+        this.transfers.set(String(msg.transferId), {
+          taskId: String(msg.taskId),
+          charLength: Number(msg.charLength) || 0,
+          chunks: /* @__PURE__ */ new Map()
+        });
+        return;
+      case "device.task.result.chunk": {
+        const bucket = this.transfers.get(String(msg.transferId));
+        if (bucket) bucket.chunks.set(Number(msg.index), String(msg.data ?? ""));
+        return;
+      }
+      case "device.task.result.end": {
+        const bucket = this.transfers.get(String(msg.transferId));
+        this.transfers.delete(String(msg.transferId));
+        if (!bucket) return;
+        const count = Number(msg.chunkCount) || bucket.chunks.size;
+        let serialized = "";
+        for (let i = 0; i < count; i += 1) serialized += bucket.chunks.get(i) ?? "";
+        try {
+          const parsed = JSON.parse(serialized);
+          this.finishTask(String(msg.taskId), parsed.response);
+        } catch (err) {
+          this.finishTask(String(msg.taskId), {
+            ok: false,
+            error: { code: "RESULT_PARSE_ERROR", message: `\u7ED3\u679C\u5206\u5757\u91CD\u7EC4\u5931\u8D25\uFF1A${err.message}` }
+          });
+        }
+        return;
+      }
+      case "device.task.cancel.result":
+        this.finishTask(String(msg.taskId), msg.response || { ok: false, canceled: true });
+        return;
+      default:
+        return;
+    }
   }
   finishTask(taskId, response) {
     const waiter = this.taskWaiters.get(taskId);
@@ -4079,6 +4515,7 @@ var AgentBroker = class {
    * @returns {Promise<{ok:boolean, error?:object, [k:string]:unknown}>}
    */
   startTask(task, timeoutMs = LIST_TASK_TIMEOUT_MS) {
+    if (this.relay) return this.startTaskViaRelay(task, timeoutMs);
     if (!this.extension.connected) {
       return Promise.resolve({
         ok: false,
@@ -4105,12 +4542,47 @@ var AgentBroker = class {
       log(`[lf-agent] \u4E0B\u53D1\u4EFB\u52A1 ${taskId} ${JSON.stringify(task)}`);
     });
   }
+  /** ⭐r76 卫星模式任务下发：device.task.start → 主 Broker → 插件；回执经 device.task.result 回来触发 finishTask */
+  startTaskViaRelay(task, timeoutMs) {
+    const relay = this.relay;
+    if (!relay || !relay.attached || !relay.extensionConnected) {
+      return Promise.resolve({
+        ok: false,
+        error: {
+          code: "EXTENSION_NOT_CONNECTED",
+          message: this.awaitingPairing ? `\u63D2\u4EF6\u5DF2\u68C0\u6D4B\u5230\u672C\u8BBE\u5907\uFF08\u536B\u661F\u6A21\u5F0F\uFF09\uFF0C\u4F46\u5C1A\u672A\u6279\u51C6\u914D\u5BF9\u3002\u8BF7\u8BA9\u7528\u6237\u5728\u63D2\u4EF6\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u63A5\u7BA1\u300D\u4E2D\u6838\u5BF9\u8BBE\u5907\u6307\u7EB9\u5E76\u70B9\u51FB\u6279\u51C6\uFF0C\u7136\u540E\u91CD\u8BD5\u3002\u6307\u7EB9\uFF1A${fingerprint}` : `\u672A\u8FDE\u63A5\u5230\u63A2\u6817\u63D2\u4EF6\u3002\u5F53\u524D\u4E3A\u591A\u5BBF\u4E3B\u4E2D\u8F6C\u6A21\u5F0F\uFF08\u7AEF\u53E3\u88AB ${relay?.hostLabel || "\u53E6\u4E00\u5BBF\u4E3B"} \u7684\u9002\u914D\u5668\u5360\u7528\uFF0C\u672C\u8BBE\u5907\u7ECF\u5176\u4E2D\u8F6C\uFF09\u2014\u2014\u8BF7\u8BA9\u7528\u6237\uFF1A1) \u786E\u8BA4\u6D4F\u89C8\u5668\u5DF2\u6253\u5F00\u4E14\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\uFF1B2) \u63D2\u4EF6\u8BBE\u7F6E\u9875 \u2192\u300C\u667A\u80FD\u4F53\u63A5\u7BA1\u300D\u2192 \u5F00\u542F\u9876\u90E8\u5F00\u5173\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u91CD\u8BD5\u4E00\u6B21\u3002`
+        }
+      });
+    }
+    const taskId = `lf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.taskWaiters.delete(taskId);
+        resolve({
+          ok: false,
+          error: {
+            code: "TASK_TIMEOUT",
+            message: `\u4EFB\u52A1\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)}s\uFF0C\u7ECF\u4E3B Broker \u4E2D\u8F6C\uFF09\u3002\u63D2\u4EF6\u53EF\u80FD\u88AB\u6D4F\u89C8\u5668\u4F11\u7720\u6216\u91C7\u96C6\u4E2D\u65AD\uFF0C\u53EF\u8BA9\u7528\u6237\u6253\u5F00\u4E00\u6B21\u63D2\u4EF6\u9762\u677F\u540E\u91CD\u8BD5\u3002`
+          }
+        });
+      }, timeoutMs);
+      this.taskWaiters.set(taskId, { resolve, timer, response: null });
+      try {
+        relay.ws.send(JSON.stringify({ type: "device.task.start", taskId, task }));
+        log(`[lf-agent] \u4E0B\u53D1\u4EFB\u52A1\uFF08\u4E2D\u8F6C\uFF09${taskId} ${JSON.stringify(task)}`);
+      } catch {
+        this.taskWaiters.delete(taskId);
+        clearTimeout(timer);
+        resolve({ ok: false, error: { code: "RELAY_BROKEN", message: "\u4E0E\u4E3B Broker \u7684\u4E2D\u8F6C\u8FDE\u63A5\u5DF2\u65AD\u5F00\uFF0C\u6B63\u5728\u91CD\u65B0\u7ADE\u4E89\u7AEF\u53E3\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002" } });
+      }
+    });
+  }
   /** connection_status 快照（驱动宿主 AI 的 onboarding 状态机）；⭐403 token 经济版：welcome 全文仅在 step=3 下发，step 1/2 轮询每轮省约 200 tokens */
   statusSnapshot() {
-    const connected = this.extension.connected;
+    const connected = this.relay ? this.relay.extensionConnected : this.extension.connected;
     const awaitingPairing = this.awaitingPairing;
     const step = connected ? 3 : awaitingPairing ? 2 : 1;
-    return {
+    const base = {
       ok: true,
       adapter: {
         running: true,
@@ -4121,20 +4593,46 @@ var AgentBroker = class {
         deviceId: DEVICE_ID,
         fingerprint,
         port: PORT,
-        protocolVersion: PROTOCOL_VERSION
+        protocolVersion: PROTOCOL_VERSION,
+        // ⭐r76 中转模式标记：true=本设备经另一宿主的主 Broker 共享插件连接
+        relayMode: Boolean(this.relay),
+        relayThrough: this.relay?.hostLabel || this.relay?.host || null
       },
       extension: {
         connected,
         extensionId: this.extension.extensionId || null,
         extensionVersion: this.extension.extensionVersion || null,
         pendingResultCount: this.extension.pendingResultCount,
-        lastDisconnectedAt: this.lastDisconnect || null
-      },
+        lastDisconnectedAt: this.lastDisconnect || null,
+        // ⭐r81 P0-3 登录态透出：save_topic/云端入库等需登录——宿主动手前用 connection_status
+        // 预检（wb 实测采完详情才报 CLOUD_ERROR，白消耗采集额度）。注意：握手时点的快照，
+        // 中途登录/退出会过期，动作层 LOGIN_REQUIRED 报错是第二道防线
+        account: this.extension.account || { loggedIn: null, nickname: null }
+      }
+    };
+    if (this.relay) {
+      return {
+        ...base,
+        onboarding: {
+          step,
+          awaitingPairing,
+          portBound: false,
+          relayMode: true,
+          hint: connected ? `\u5DF2\u8FDE\u63A5\uFF08\u591A\u5BBF\u4E3B\u4E2D\u8F6C\u6A21\u5F0F\uFF1A\u7ECF\u300C${this.relay.hostLabel || this.relay.host}\u300D\u7684\u8FDE\u63A5\u5668\u5171\u4EAB\u63D2\u4EF6\u8FDE\u63A5\uFF0C\u8C46\u5305\u5DE5\u4F5C/WorkBuddy \u53EF\u540C\u65F6\u5728\u7EBF\uFF09\uFF0C\u53EF\u4EE5\u5F00\u59CB\u91C7\u96C6\u4EFB\u52A1\u3002` : awaitingPairing ? `\u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF08\u536B\u661F\u6A21\u5F0F\uFF09\uFF1A\u628A adapter.fingerprint \u539F\u6837\u8F6C\u544A\u7528\u6237\uFF0C\u8BF7\u5176\u5230\u63D2\u4EF6\u8BBE\u7F6E\u9875\u6838\u5BF9\u6307\u7EB9\u4E00\u81F4\u540E\u70B9\u300C\u6279\u51C6\u300D\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002` : `\u4E2D\u8F6C\u6A21\u5F0F\u7B49\u5F85\u63D2\u4EF6\uFF1A\u8BF7\u8BA9\u7528\u6237\u6253\u5F00\u6D4F\u89C8\u5668\u786E\u8BA4\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\u3001\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u63A5\u7BA1\u300D\u5F00\u5173\u5DF2\u6253\u5F00\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002`
+        },
+        welcome: step === 3 ? { fixedCopy: WELCOME_FIXED_COPY } : null
+      };
+    }
+    return {
+      ...base,
       onboarding: {
         step,
         awaitingPairing,
         portBound: this.portBound,
-        hint: !this.portBound ? `\u672C\u9002\u914D\u5668\u7684\u672C\u673A\u7AEF\u53E3 ${PORT} \u88AB\u53E6\u4E00\u4E2A Agent \u9002\u914D\u5668\u5360\u7528\uFF08\u901A\u5E38\u4E3A\u53E6\u4E00\u5BBF\u4E3B\uFF0C\u5982 ${HOST === "doubao-work" ? "WorkBuddy" : "\u8C46\u5305\u5DE5\u4F5C"}\u2014\u2014\u540C\u4E00\u65F6\u95F4\u53EA\u80FD\u4E00\u4E2A AI \u52A9\u624B\u5728\u7EBF\uFF09\u3002\u8BF7\u7528\u6237\u5B8C\u5168\u9000\u51FA\u53E6\u4E00\u4E2A AI \u52A9\u624B\uFF08\u542B\u6258\u76D8\uFF09\uFF0C\u672C\u9002\u914D\u5668\u4F1A\u5728 3 \u79D2\u5185\u81EA\u52A8\u63A5\u7BA1\u7AEF\u53E3\uFF0C\u63D2\u4EF6\u968F\u540E\u81EA\u52A8\u91CD\u8FDE\uFF1B\u671F\u95F4\u4E0D\u8981\u8BA9\u7528\u6237\u505A\u5176\u4ED6\u64CD\u4F5C\u3002` : step === 1 ? "\u63D2\u4EF6\u672A\u8FDE\u63A5\uFF1A\u82E5\u4F60\u6709\u7EC8\u7AEF\u6743\u9650\u53EF\u8FD0\u884C start chrome\uFF08\u6216 start msedge\uFF09\u6253\u5F00\u6D4F\u89C8\u5668\uFF0C\u63D2\u4EF6\u7EA6 5 \u79D2\u5185\u81EA\u52A8\u91CD\u8FDE\uFF1B\u5426\u5219\u8BF7\u7528\u6237\u5728\u6D4F\u89C8\u5668\u6253\u5F00\u63A2\u6817\u63D2\u4EF6 \u2192 \u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u63A5\u7BA1 \u2192 \u6253\u5F00\u9876\u90E8\u5F00\u5173\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002" : step === 2 ? `\u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF1A\u628A adapter.fingerprint \u539F\u6837\u8F6C\u544A\u7528\u6237\uFF0C\u8BF7\u5176\u5230\u63D2\u4EF6\u8BBE\u7F6E\u9875\u6838\u5BF9\u6307\u7EB9\u4E00\u81F4\u540E\u70B9\u300C\u6279\u51C6\u300D\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002\u6CE8\u610F\uFF1A\u82E5 extension.connected \u4E3A false\uFF0C\u8BF4\u660E\u8FD9\u662F\u63D2\u4EF6\u65AD\u5F00\u524D\u7684\u65E7\u72B6\u6001\u2014\u2014\u8BF7\u63D0\u9192\u7528\u6237\u68C0\u67E5\u63D2\u4EF6\u5F00\u5173\u662F\u5426\u6253\u5F00\uFF08\u6216\u91CD\u65B0\u52A0\u8F7D\u63D2\u4EF6\u540E\u91CD\u65B0\u6253\u5F00\uFF09\uFF0C\u63D2\u4EF6\u91CD\u8FDE\u4F1A\u81EA\u52A8\u91CD\u65B0\u63E1\u624B\u3002` : "\u5DF2\u8FDE\u63A5\uFF0C\u53EF\u4EE5\u5F00\u59CB\u91C7\u96C6\u4EFB\u52A1\u3002"
+        // ⭐r85 portBlocked：EADDRINUSE 且占用者探测无应答 → Windows 动态端口保留段圈走端口。
+        //   让宿主 AI 直接把根治命令转告用户，而不是一起懵在「连接器连接失败」
+        portBlocked: this.portBlocked === true,
+        hint: this.portBlocked ? `\u9002\u914D\u5668\u7AEF\u53E3 ${PORT} \u88AB Windows \u52A8\u6001\u7AEF\u53E3\u4FDD\u7559\uFF08Hyper-V/WSL \u6392\u9664\u6BB5\uFF09\u6321\u4F4F\uFF1Abind \u88AB\u62D2\u4F46\u65E0\u8FDB\u7A0B\u5360\u7528\uFF0C\u901A\u5E38\u51E0\u5341\u5206\u949F\u5185\u81EA\u52A8\u6062\u590D\uFF0C\u9002\u914D\u5668\u5728\u6301\u7EED\u91CD\u8BD5\u3002\u8BF7\u628A\u8FD9\u6761\u6839\u6CBB\u547D\u4EE4\u8F6C\u544A\u7528\u6237\uFF08\u7BA1\u7406\u5458 PowerShell \u8FD0\u884C\u4E00\u6B21\u6C38\u4E45\u751F\u6548\uFF09\uFF1Anet stop winnat ; netsh int ipv4 add excludedportrange protocol=tcp startport=${PORT} numberofports=1 ; net start winnat\uFF08\u8FD0\u884C\u5B8C\u91CD\u542F\u672C\u4F1A\u8BDD\u5373\u8FDE\u4E0A\uFF09\u3002\u8F6C\u544A\u540E\u6BCF 30 \u79D2\u590D\u67E5\u4E00\u6B21\u3002` : !this.portBound ? `\u672C\u9002\u914D\u5668\u7684\u672C\u673A\u7AEF\u53E3 ${PORT} \u6B63\u5728\u88AB\u5360\u7528\u4E14\u5C1A\u672A\u5B8C\u6210\u4E2D\u8F6C\u534F\u5546\uFF08\u6B63\u5728\u81EA\u52A8\u5904\u7406\uFF1A\u540C\u5BBF\u4E3B\u5B64\u513F\u4F1A\u88AB\u63A5\u7BA1\uFF0C\u5F02\u5BBF\u4E3B\u4F1A\u81EA\u52A8\u8F6C\u5165\u4E2D\u8F6C\u5171\u5B58\uFF09\u3002\u8BF7\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\uFF1B\u82E5\u8D85\u8FC7 1 \u5206\u949F\u4ECD\u505C\u7559\u5728\u6B64\u72B6\u6001\uFF0C\u8BF7\u7528\u6237\u5B8C\u5168\u9000\u51FA\u6240\u6709 AI \u52A9\u624B\uFF08\u542B\u6258\u76D8\uFF09\u540E\u91CD\u5F00\u3002` : step === 1 ? "\u63D2\u4EF6\u672A\u8FDE\u63A5\uFF1A\u82E5\u4F60\u6709\u7EC8\u7AEF\u6743\u9650\u53EF\u8FD0\u884C start chrome\uFF08\u6216 start msedge\uFF09\u6253\u5F00\u6D4F\u89C8\u5668\uFF0C\u63D2\u4EF6\u7EA6 5 \u79D2\u5185\u81EA\u52A8\u91CD\u8FDE\uFF1B\u5426\u5219\u8BF7\u7528\u6237\u5728\u6D4F\u89C8\u5668\u6253\u5F00\u63A2\u6817\u63D2\u4EF6 \u2192 \u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u63A5\u7BA1 \u2192 \u6253\u5F00\u9876\u90E8\u5F00\u5173\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002" : step === 2 ? `\u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF1A\u628A adapter.fingerprint \u539F\u6837\u8F6C\u544A\u7528\u6237\uFF0C\u8BF7\u5176\u5230\u63D2\u4EF6\u8BBE\u7F6E\u9875\u6838\u5BF9\u6307\u7EB9\u4E00\u81F4\u540E\u70B9\u300C\u6279\u51C6\u300D\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002\u6CE8\u610F\uFF1A\u82E5 extension.connected \u4E3A false\uFF0C\u8BF4\u660E\u8FD9\u662F\u63D2\u4EF6\u65AD\u5F00\u524D\u7684\u65E7\u72B6\u6001\u2014\u2014\u8BF7\u63D0\u9192\u7528\u6237\u68C0\u67E5\u63D2\u4EF6\u5F00\u5173\u662F\u5426\u6253\u5F00\uFF08\u6216\u91CD\u65B0\u52A0\u8F7D\u63D2\u4EF6\u540E\u91CD\u65B0\u6253\u5F00\uFF09\uFF0C\u63D2\u4EF6\u91CD\u8FDE\u4F1A\u81EA\u52A8\u91CD\u65B0\u63E1\u624B\u3002` : "\u5DF2\u8FDE\u63A5\uFF0C\u53EF\u4EE5\u5F00\u59CB\u91C7\u96C6\u4EFB\u52A1\u3002"
       },
       // step<3 不下发 welcome（省 token）；step=3 由宿主 AI 原样展示给用户
       welcome: step === 3 ? { fixedCopy: WELCOME_FIXED_COPY } : null
@@ -4142,11 +4640,19 @@ var AgentBroker = class {
   }
 };
 var WELCOME_FIXED_COPY = [
-  "\u4F60\u4E0D\u9700\u8981\u7814\u7A76\u8BE5\u91C7\u96C6\u4EC0\u4E48\u6570\u636E\uFF0C\u4E5F\u4E0D\u7528\u8BB0\u4EFB\u4F55\u547D\u4EE4\u3002\u53EA\u8981\u544A\u8BC9\u6211\u4F60\u5728\u505A\u4EC0\u4E48\u3001\u73B0\u5728\u5361\u5728\u54EA\u91CC\uFF0C\u6211\u4F1A\u81EA\u5DF1\u5224\u65AD\u5E94\u8BE5\u641C\u7D22\u5173\u952E\u8BCD\u3001\u67E5\u770B\u535A\u4E3B\u4E3B\u9875\u3001\u8BFB\u7206\u6B3E\u8BC4\u8BBA\u8FD8\u662F\u62C6\u89E3\u5355\u7BC7\u7B14\u8BB0\uFF0C\u518D\u628A\u771F\u5B9E\u6570\u636E\u6574\u7406\u6210\u4F60\u80FD\u76F4\u63A5\u4F7F\u7528\u7684\u83B7\u5BA2\u7EBF\u7D22\u3001\u9009\u9898\u6216\u521D\u7A3F\u3002",
-  "\u4F8B\u5982\uFF1A\u4F60\u53EF\u4EE5\u8BF4\u300C\u6211\u5728\u505A\u5BB6\u88C5\u83B7\u5BA2\uFF0C\u5E2E\u6211\u770B\u770B\u5C0F\u7EA2\u4E66\u4E0A\u6700\u8FD1\u4EC0\u4E48\u5185\u5BB9\u8BC4\u8BBA\u91CC\u7559\u8D44\u6700\u591A\u300D\u300C\u5E2E\u6211\u627E\u4E00\u4E2A\u8D77\u53F7\u5FEB\u7684\u5C0F\u7EA2\u4E66\u8D5B\u9053\uFF0C\u7ED9\u6211 10 \u4E2A\u5BF9\u6807\u8D26\u53F7\u300D\u300C\u628A\u8FD9\u7BC7\u7206\u6B3E\u7684\u8BC4\u8BBA\u533A\u6316\u4E00\u904D\uFF0C\u627E\u51FA\u60F3\u8BE2\u4EF7\u7684\u4EBA\u300D\u3002\u6211\u4F1A\u81EA\u52A8\u9009\u62E9\u5408\u9002\u7684\u91C7\u96C6\u5DE5\u5177\uFF0C\u628A\u7ED3\u679C\u6574\u7406\u6210\u7ED3\u8BBA\u4EA4\u7ED9\u4F60\u3002"
+  "\u2705 \u63A2\u6817\u5DF2\u8FDE\u63A5\uFF01\u4EE5\u540E\u4F60\u4E0D\u7528\u8BB0\u4EFB\u4F55\u547D\u4EE4\u2014\u2014\u8BF4\u300C\u63A2\u6817\u300D\u6216\u300C\u63A2\u4E00\u4E0B\u300D\u518D\u5E26\u4E0A\u4F60\u60F3\u67E5\u7684\uFF0C\u6211\u5C31\u5F00\u5E72\uFF1B\u6216\u8005\u76F4\u63A5\u544A\u8BC9\u6211\u4F60\u5728\u505A\u4EC0\u4E48\u3001\u5361\u5728\u54EA\u91CC\uFF0C\u6211\u4F1A\u81EA\u5DF1\u5224\u65AD\u8BE5\u641C\u5173\u952E\u8BCD\u3001\u770B\u535A\u4E3B\u4E3B\u9875\u3001\u8BFB\u7206\u6B3E\u8BC4\u8BBA\u8FD8\u662F\u62C6\u89E3\u5355\u7BC7\u7B14\u8BB0\uFF0C\u628A\u771F\u5B9E\u6570\u636E\u6574\u7406\u6210\u4F60\u80FD\u76F4\u63A5\u7528\u7684\u83B7\u5BA2\u7EBF\u7D22\u3001\u9009\u9898\u6216\u521D\u7A3F\u3002",
+  "\u73B0\u5728\u5C31\u53EF\u4EE5\u8BD5\u8BD5\uFF1A\n\u300C\u6211\u5728\u505A\u5BB6\u88C5\u83B7\u5BA2\uFF0C\u5E2E\u6211\u770B\u770B\u5C0F\u7EA2\u4E66\u4E0A\u6700\u8FD1\u4EC0\u4E48\u5185\u5BB9\u8BC4\u8BBA\u91CC\u7559\u8D44\u6700\u591A\u300D\n\u300C\u5E2E\u6211\u627E\u4E00\u4E2A\u8D77\u53F7\u5FEB\u7684\u5C0F\u7EA2\u4E66\u8D5B\u9053\uFF0C\u7ED9\u6211 10 \u4E2A\u5BF9\u6807\u8D26\u53F7\u300D\n\u300C\u628A\u8FD9\u7BC7\u7206\u6B3E\u7684\u8BC4\u8BBA\u533A\u6316\u4E00\u904D\uFF0C\u627E\u51FA\u60F3\u8BE2\u4EF7\u7684\u4EBA\u300D"
 ].join("\n\n");
+var MCP_INSTRUCTIONS = [
+  "\u63A2\u6817\uFF08LeadsRadar\uFF09\u5448\u73B0\u89C4\u8303\u2014\u2014\u5BF9\u6700\u7EC8\u7528\u6237\u8BF4\u8BDD\u65F6\u9075\u5B88\uFF0C\u56DB\u4E2A\u6280\u80FD\u901A\u7528\uFF1A",
+  "1. \u65F6\u95F4\u76F8\u5BF9\u5316\uFF1A\u63A5\u53E3\u8FD4\u56DE\u7684 ISO \u65F6\u95F4\u6233\uFF08\u5982 2026-04-16T16:00:00.000Z\uFF09\u4E00\u5F8B\u8F6C\u6210\u4EBA\u8BDD\u2014\u2014\u300C3 \u5929\u524D\u300D\u300C\u4E0A\u5468\u300D\u300C4\u670817\u65E5\u300D\uFF1B\u6570\u636E\u7ED3\u8BBA\u6807\u6CE8\u300C\u622A\u81F3\u91C7\u96C6\u65F6\u300D\uFF0C\u9632\u6B62\u7528\u6237\u5F53\u5B9E\u65F6\u6570\u636E\u3002",
+  "2. \u5B57\u6BB5\u767D\u540D\u5355\uFF1Aid\u3001xsec_token\u3001collected_at\u3001note_id\u3001author_id\u3001synced\u3001task_status \u7B49\u6280\u672F\u5B57\u6BB5\u4E0D\u8FDB\u7528\u6237\u89C6\u91CE\uFF1B\u7528\u6237\u53EA\u770B\u6807\u9898/\u4F5C\u8005/\u4E92\u52A8\u6570/\u76F8\u5BF9\u65F6\u95F4/\u94FE\u63A5/\u7ED3\u8BBA\u3002\u5185\u90E8\u5B57\u6BB5\u786E\u9700\u89E3\u91CA\u65F6\u7FFB\u8BD1\u6210\u4EBA\u8BDD\uFF08synced=false\u2192\u8FD8\u6CA1\u540C\u6B65\u5230\u4E91\u7AEF\uFF09\u3002",
+  "3. \u94FE\u63A5\u6807\u9898\u5316\uFF1A\u8D85\u957F\u5E26 token \u7684 URL \u6298\u53E0\u6210\u300A\u6807\u9898\u300B+\u300C\u67E5\u770B\u300D\uFF08markdown \u94FE\u63A5\uFF09\uFF0C\u4E0D\u88F8\u8D34\u957F URL \u5237\u5C4F\uFF1B\u62A5\u544A\u94FE\u63A5\u6CE8\u660E\u300C\u7F51\u9875\u7AEF\u770B\u5B8C\u6574\u7248\u300D\u3002",
+  "4. \u9519\u8BEF\u4E09\u6001\uFF1A\u5DE5\u5177\u62A5\u9519\u5148\u5F52\u7C7B\u518D\u8BF4\u8BDD\u2014\u2014\u77AC\u65F6\u7C7B\uFF08\u8D85\u65F6/\u7F51\u7EDC\u6296\u52A8\uFF09\u2192\u300C\u6211\u91CD\u8BD5\u4E00\u6B21\u300D\uFF1B\u9700\u7528\u6237\u64CD\u4F5C\u7C7B\uFF08\u672A\u767B\u5F55/\u63D2\u4EF6\u672A\u8FDE/\u9650\u989D\uFF09\u2192\u7ED9\u5177\u4F53\u4E00\u6B65\uFF08\u53BB\u54EA\u70B9\u4EC0\u4E48\uFF09\uFF1B\u80FD\u529B\u672A\u5F00\u901A\u7C7B\uFF08\u5B57\u6BB5\u67E5\u4E0D\u5230/\u529F\u80FD\u672A\u4E0A\u7EBF\uFF09\u2192\u76F4\u8BF4\u300C\u8FD9\u4E2A\u6570\u636E\u73B0\u5728\u62FF\u4E0D\u5230\u300D+\u7ED9\u66FF\u4EE3\u8DEF\u5F84\u3002\u7981\u6B62\u539F\u6837\u590D\u8FF0\u62A5\u9519\u7801\u548C\u5185\u90E8 message \u7ED9\u7528\u6237\u3002",
+  "5. \u957F\u4EFB\u52A1\u5148\u62A5\u9884\u671F\uFF1A\u6279\u91CF\u52A8\u4F5C\uFF08\u8BC4\u8BBA\u6316\u51E0\u767E\u6761\u3001\u5DE1 10 \u4E2A\u8D26\u53F7\uFF09\u5F00\u5DE5\u524D\u5148\u8BF4\u300C\u9884\u8BA1\u5206 N \u6279\u3001\u7EA6 X \u5206\u949F\u300D\uFF0C\u4E0D\u8BA9\u7528\u6237\u5E72\u7B49\uFF1B\u6BCF\u6279\u5B8C\u6210\u64AD\u62A5\u4E00\u884C\u8FDB\u5EA6\u3002"
+].join("\n");
 var broker = new AgentBroker();
-if (process.stdin && !process.stdin.isTTY) {
+if (!HTTP_MODE && process.stdin && !process.stdin.isTTY) {
   process.stdin.resume();
   process.stdin.on("end", () => {
     log("[lf-agent] stdin EOF\uFF08\u5BBF\u4E3B\u5DF2\u9000\u51FA/\u7BA1\u9053\u5173\u95ED\uFF09\u2192 \u81EA\u52A8\u9000\u51FA\uFF0C\u4E0D\u518D\u5360\u7528\u7AEF\u53E3");
@@ -4162,7 +4668,7 @@ function capLimit(value, fallback) {
 var TOOLS = [
   {
     name: "leadsradar_connection_status",
-    description: "\u68C0\u67E5\u63A2\u6817\uFF08LeadsRadar\uFF09\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u72B6\u6001\u4E0E\u63A5\u5165\u8FDB\u5EA6\u3002\u5F00\u59CB\u4EFB\u4F55\u91C7\u96C6\u524D\u3001\u4EE5\u53CA\u914D\u5BF9\u7B49\u5F85\u671F\u95F4\u5E94\u8F6E\u8BE2\u672C\u5DE5\u5177\uFF08\u6BCF 8 \u79D2\u4E00\u6B21\uFF0C\u6700\u591A 12 \u6B21\uFF09\uFF1Aonboarding.step=1 \u8868\u793A\u63D2\u4EF6\u672A\u8FDE\u63A5\uFF08\u9700\u7528\u6237\u5F00\u542F\u63D2\u4EF6\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u63A5\u7BA1\u300D\u5F00\u5173\uFF09\uFF1Bstep=2 \u8868\u793A\u7B49\u5F85\u7528\u6237\u5728\u63D2\u4EF6\u4E2D\u6279\u51C6\u914D\u5BF9\uFF1Bstep=3\uFF08extension.connected=true\uFF09\u8868\u793A\u5DF2\u5C31\u7EEA\uFF0C\u53EF\u4EE5\u8C03\u7528\u91C7\u96C6\u5DE5\u5177\u3002",
+    description: "\u68C0\u67E5\u63A2\u6817\uFF08LeadsRadar\uFF09\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u72B6\u6001\u4E0E\u63A5\u5165\u8FDB\u5EA6\u3002\u5F00\u59CB\u4EFB\u4F55\u91C7\u96C6\u524D\u3001\u4EE5\u53CA\u914D\u5BF9\u7B49\u5F85\u671F\u95F4\u5E94\u8F6E\u8BE2\u672C\u5DE5\u5177\uFF08\u6BCF 8 \u79D2\u4E00\u6B21\uFF0C\u6700\u591A 12 \u6B21\uFF09\uFF1Aonboarding.step=1 \u8868\u793A\u63D2\u4EF6\u672A\u8FDE\u63A5\uFF08\u9700\u7528\u6237\u5F00\u542F\u63D2\u4EF6\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u63A5\u7BA1\u300D\u5F00\u5173\uFF09\uFF1Bstep=2 \u8868\u793A\u7B49\u5F85\u7528\u6237\u5728\u63D2\u4EF6\u4E2D\u6279\u51C6\u914D\u5BF9\uFF1Bstep=3\uFF08extension.connected=true\uFF09\u8868\u793A\u5DF2\u5C31\u7EEA\uFF0C\u53EF\u4EE5\u8C03\u7528\u91C7\u96C6\u5DE5\u5177\u3002extension.account.loggedIn \u4E3A\u767B\u5F55\u6001\uFF08true=\u5DF2\u767B\u5F55/false=\u672A\u767B\u5F55/null=\u672A\u77E5\uFF09\uFF1A\u5B58\u9009\u9898\uFF08save_topic\uFF09\u7B49\u4E91\u7AEF\u5199\u5165\u52A8\u4F5C\u52A8\u624B\u524D\u5FC5\u67E5\u2014\u2014false \u65F6\u5148\u5F15\u5BFC\u7528\u6237\u5728\u63D2\u4EF6\u4E2A\u4EBA\u4E2D\u5FC3\u767B\u5F55\uFF0C\u522B\u5148\u6D88\u8017\u91C7\u96C6\u989D\u5EA6\uFF1BloggedIn=true \u65F6\u987A\u5E26\u53EF\u7528 extension.account.nickname \u79F0\u547C\u7528\u6237\u3002",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
@@ -4214,6 +4720,18 @@ var TOOLS = [
         url: { type: "string", description: "\u7B14\u8BB0/\u89C6\u9891 URL" }
       },
       required: ["url"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "leadsradar_download_media",
+    description: "\u4E0B\u8F7D\u4E00\u7BC7\u7B14\u8BB0/\u89C6\u9891\u7684\u65E0\u6C34\u5370\u7D20\u6750\u5230\u7528\u6237\u7684\u6D4F\u89C8\u5668\u4E0B\u8F7D\u76EE\u5F55\uFF08\u4E0E\u63D2\u4EF6\u300C\u4E0B\u8F7D\u7D20\u6750\u300D\u6309\u94AE\u540C\u6E90\u540C\u94FE\uFF0C\u5B8C\u5168\u514D\u8D39\u3001\u4E0D\u5360\u4F1A\u5458\u6743\u76CA\u3001\u4E0E\u300C\u63D0\u53D6\u6587\u6848\u300D\u65E0\u5173\uFF09\u3002\u89C6\u9891=MP4+\u5C01\u9762\u56FE\uFF0C\u56FE\u6587=\u56FE\u96C6\u56FE\u7247\uFF0C\u7EDF\u4E00\u843D\u5728\u6D4F\u89C8\u5668\u4E0B\u8F7D\u76EE\u5F55\u7684\u72EC\u7ACB\u5B50\u6587\u4EF6\u5939\u3002\u9002\u5408\uFF1A\u7528\u6237\u8981\u62FF\u539F\u7D20\u6750\u505A\u4E8C\u6B21\u521B\u4F5C/\u526A\u8F91\u3002\u53C2\u6570 note \u4F20\u91C7\u96C6\u5DE5\u5177\u8FD4\u56DE\u7684\u7B14\u8BB0\u5BF9\u8C61\uFF08\u6216\u76F4\u63A5\u7ED9 url\uFF09\u3002\u6CE8\u610F\uFF1A\u4E0B\u8F7D\u4F1A\u540E\u53F0\u8BBF\u95EE\u4E00\u6B21\u4F5C\u54C1\u9875\u5237\u65B0\u5730\u5740\uFF0C\u5360\u7528\u4E00\u6B21\u91C7\u96C6\u9650\u989D\uFF1B\u94FE\u63A5\u7B7E\u540D\u6709\u65F6\u6548\uFF0C\u8BF7\u52FF\u7F13\u5B58\u7ED3\u679C\u6279\u91CF\u91CD\u8BD5\u3002",
+    inputSchema: {
+      type: "object",
+      properties: {
+        note: { type: "object", description: "\u91C7\u96C6\u7ED3\u679C\u4E2D\u7684\u7B14\u8BB0\u5BF9\u8C61\uFF08\u539F\u6837\u4F20\u56DE\uFF0C\u4F18\u5148\u7528\u5B83\u7684 note_url/platform/\u5C01\u9762\uFF09" },
+        url: { type: "string", description: "\u7B14\u8BB0/\u89C6\u9891 URL\uFF08\u672A\u4F20 note \u65F6\u5FC5\u586B\uFF09" }
+      },
       additionalProperties: false
     }
   },
@@ -4298,6 +4816,23 @@ async function callTool(name, args) {
         NOTE_DETAIL_TIMEOUT_MS
       );
     }
+    case "leadsradar_download_media": {
+      const note = args.note && typeof args.note === "object" && !Array.isArray(args.note) ? args.note : null;
+      const url = String(note && (note.note_url || note.url || note.share_url) || args.url || "").trim();
+      if (!note && !/^https?:\/\//.test(url)) {
+        return { ok: false, error: { code: "BAD_ARGS", message: "\u9700\u63D0\u4F9B note \u5BF9\u8C61\uFF08\u91C7\u96C6\u8FD4\u56DE\u539F\u6837\u4F20\u56DE\uFF09\u6216 url \u53C2\u6570" } };
+      }
+      return broker.startTask(
+        {
+          mode: "download_media",
+          ...note ? { note } : { url, platform: args.platform === "douyin" ? "douyin" : "xiaohongshu" },
+          source: HOST,
+          agentContext: { host: HOST }
+        },
+        6 * 60 * 1e3
+        // ⭐r80 提取（后台开页刷新 ~15s）+ 大文件真实下载完成监听（5min 超时保护）
+      );
+    }
     case "leadsradar_save_topic": {
       const note = args.note;
       if (!note || typeof note !== "object" || Array.isArray(note) || !String(note.title || "").trim()) {
@@ -4340,71 +4875,132 @@ var MCP_PROTOCOL_VERSION = "2025-03-26";
 function writeRpc(msg) {
   process.stdout.write(JSON.stringify(msg) + "\n");
 }
-function rpcResult(id, result) {
-  writeRpc({ jsonrpc: "2.0", id, result });
-}
-function rpcError(id, code, message) {
-  writeRpc({ jsonrpc: "2.0", id, error: { code, message } });
-}
-var rl = createInterface({ input: process.stdin });
-rl.on("line", (line) => {
-  const text = line.trim();
-  if (!text) return;
-  let req;
-  try {
-    req = JSON.parse(text);
-  } catch {
-    return;
-  }
-  if (req.id === void 0 || req.id === null) {
-    return;
-  }
+async function dispatchRpc(req) {
+  if (req.id === void 0 || req.id === null) return null;
   const { method, params = {} } = req;
   switch (method) {
     case "initialize":
-      rpcResult(req.id, {
-        protocolVersion: params.protocolVersion || MCP_PROTOCOL_VERSION,
-        capabilities: { tools: {} },
-        serverInfo: { name: "leadsradar-agent-adapter", version: ADAPTER_VERSION, title: "\u63A2\u6817 Agent \u9002\u914D\u5668" }
-      });
-      return;
+      return {
+        jsonrpc: "2.0",
+        id: req.id,
+        result: {
+          protocolVersion: params.protocolVersion || MCP_PROTOCOL_VERSION,
+          capabilities: { tools: {} },
+          serverInfo: { name: "leadsradar-agent-adapter", version: ADAPTER_VERSION, title: "\u63A2\u6817 Agent \u9002\u914D\u5668" },
+          instructions: MCP_INSTRUCTIONS
+          // ⭐r82 呈现规范随 initialize 注入宿主系统提示
+        }
+      };
     case "ping":
-      rpcResult(req.id, {});
-      return;
+      return { jsonrpc: "2.0", id: req.id, result: {} };
     case "tools/list":
-      rpcResult(req.id, { tools: TOOLS });
-      return;
+      return { jsonrpc: "2.0", id: req.id, result: { tools: TOOLS } };
     case "tools/call": {
       const name = String(params.name || "");
       const args = params.arguments || {};
-      callTool(name, args).then((response) => {
-        rpcResult(req.id, {
+      let response;
+      try {
+        response = await callTool(name, args);
+      } catch (err) {
+        response = { ok: false, error: { code: "TOOL_CRASH", message: String(err?.message || err) } };
+      }
+      return {
+        jsonrpc: "2.0",
+        id: req.id,
+        result: {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
           isError: response && response.ok === false
-        });
-      }).catch((err) => {
-        rpcResult(req.id, {
-          content: [{ type: "text", text: JSON.stringify({ ok: false, error: { code: "TOOL_CRASH", message: String(err?.message || err) } }) }],
-          isError: true
-        });
-      });
-      return;
+        }
+      };
     }
     case "resources/list":
-      rpcResult(req.id, { resources: [] });
-      return;
+      return { jsonrpc: "2.0", id: req.id, result: { resources: [] } };
     case "prompts/list":
-      rpcResult(req.id, { prompts: [] });
-      return;
+      return { jsonrpc: "2.0", id: req.id, result: { prompts: [] } };
     default:
-      rpcError(req.id, -32601, `method not found: ${method}`);
+      return { jsonrpc: "2.0", id: req.id, error: { code: -32601, message: `method not found: ${method}` } };
   }
-});
+}
+var httpServer = null;
+if (!HTTP_MODE) {
+  const rl = createInterface({ input: process.stdin });
+  rl.on("line", (line) => {
+    const text = line.trim();
+    if (!text) return;
+    let req;
+    try {
+      req = JSON.parse(text);
+    } catch {
+      return;
+    }
+    Promise.resolve(dispatchRpc(req)).then((resp) => {
+      if (resp) writeRpc(resp);
+    });
+  });
+  log(`[lf-agent] MCP STDIO server \u5DF2\u542F\u52A8\uFF08host=${HOST} device="${DEVICE_NAME}"\uFF09`);
+} else {
+  const CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, GET, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "content-type, accept, authorization, mcp-session-id, mcp-protocol-version, last-event-id",
+    "Access-Control-Expose-Headers": "mcp-session-id",
+    "Access-Control-Max-Age": "86400"
+  };
+  httpServer = createHttpServer((req, res) => {
+    const url = (req.url || "").split("?")[0];
+    if (url !== "/mcp" && url !== "/") {
+      res.writeHead(404, CORS_HEADERS);
+      res.end();
+      return;
+    }
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, CORS_HEADERS);
+      res.end();
+      return;
+    }
+    if (req.method !== "POST") {
+      res.writeHead(405, { ...CORS_HEADERS, Allow: "POST, OPTIONS" });
+      res.end("method not supported");
+      return;
+    }
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      let body;
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        res.writeHead(400, { ...CORS_HEADERS, "Content-Type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } }));
+        return;
+      }
+      Promise.resolve(dispatchRpc(body)).then((resp) => {
+        if (!resp) {
+          res.writeHead(202, CORS_HEADERS);
+          res.end();
+          return;
+        }
+        res.writeHead(200, { ...CORS_HEADERS, "Content-Type": "application/json" });
+        res.end(JSON.stringify(resp));
+      });
+    });
+  });
+  httpServer.listen(HTTP_PORT, "127.0.0.1", () => {
+    log(`[lf-agent] MCP HTTP server \u5DF2\u542F\u52A8 http://127.0.0.1:${HTTP_PORT}/mcp\uFF08host=${HOST} device="${DEVICE_NAME}"\uFF0CStreamable HTTP stateless\uFF1APOST \u5373\u7B54\uFF0C\u65E0\u4F1A\u8BDD\u65E0\u63A8\u9001\uFF09`);
+  });
+  httpServer.on("error", (err) => {
+    log(`[lf-agent] HTTP \u7AEF\u53E3 ${HTTP_PORT} \u542F\u52A8\u5931\u8D25\uFF1A${err?.code || err?.message || err}\u2014\u2014\u82E5\u5DF2\u6709\u4E00\u4E2A\u5B9E\u4F8B\u5728\u8DD1\uFF0C\u5B83\u4ECD\u5728\u6B63\u5E38\u670D\u52A1\uFF08\u6263\u5B50\u8FDE\u7684\u5C31\u662F\u5B83\uFF09\uFF0C\u65E0\u9700\u91CD\u590D\u542F\u52A8\uFF1B\u786E\u9700\u6539\u7AEF\u53E3\u7528 LEADSRADAR_AGENT_HTTP_PORT\u3002\u672C\u8FDB\u7A0B\u9000\u51FA\u3002`);
+    process.exit(1);
+  });
+}
+log(`[lf-agent] \u5DE5\u5177\uFF1A${TOOLS.map((t) => t.name).join(", ")}`);
 process.on("exit", () => {
   try {
     broker.wss.close();
   } catch {
   }
+  try {
+    if (httpServer) httpServer.close();
+  } catch {
+  }
 });
-log(`[lf-agent] MCP STDIO server \u5DF2\u542F\u52A8\uFF08host=${HOST} device="${DEVICE_NAME}"\uFF09`);
-log(`[lf-agent] \u5DE5\u5177\uFF1A${TOOLS.map((t) => t.name).join(", ")}`);

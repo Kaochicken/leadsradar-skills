@@ -2,7 +2,7 @@
 
 English | [中文](README.md)
 
-![version](https://img.shields.io/badge/version-1.0.0-E63946) ![hosts](https://img.shields.io/badge/hosts-WorkBuddy%20%7C%20Doubao%20%7C%20Codex-3B82F6) ![platform](https://img.shields.io/badge/platform-Xiaohongshu%20%7C%20Douyin-8A8A8C)
+![version](https://img.shields.io/badge/version-1.0.0-E63946) ![hosts](https://img.shields.io/badge/hosts-WorkBuddy%20%7C%20Doubao%20%7C%20DeepSeek-3B82F6) ![platform](https://img.shields.io/badge/platform-Xiaohongshu%20%7C%20Douyin-8A8A8C)
 
 > Turn your AI assistant into a remote pilot for the LeadsRadar lead-gen extension — **one sentence from your phone, the browser extension on your PC does the legwork.**
 
@@ -44,11 +44,36 @@ Each skill is a `SKILL.md` you drop into your host's skill/instruction library:
 1. **Install the LeadsRadar extension** from [leadsradar.cn](https://leadsradar.cn) and sign in.
 2. **Feed the adapter to your AI assistant**
    - **WorkBuddy / Doubao Work (recommended, fully automated)**: open the extension's *Settings → Agent takeover*, pick your host, click "one-click copy prompt", paste it to your AI. The only manual step: verify the device fingerprint in the extension and click *Approve*.
-   - **Codex / Claude Desktop or any STDIO MCP host (manual)**:
+   - **Coding agents (Claude Code / Codex CLI / Cursor / Gemini CLI — any STDIO MCP host, manual)**:
+     Get `leadsradar-agent.mjs` first (clone this repo, or click "one-click copy" for any host in the extension's *Settings → Agent takeover* — it auto-downloads to your Downloads folder), then configure:
+
+     Claude Code (one command):
      ```bash
-     codex plugin marketplace add https://github.com/Kaochicken/leadsradar-skills
+     claude mcp add leadsradar -e LEADSRADAR_AGENT_HOST=claude -- node /absolute/path/to/leadsradar-agent.mjs
      ```
-     Or configure manually: command `node`, args = absolute path of `leadsradar-agent.mjs`, env `LEADSRADAR_AGENT_HOST` = your host id. Zero-dependency single file, no `npm install`.
+
+     Cursor / generic (`mcp.json`):
+     ```json
+     {
+       "mcpServers": {
+         "leadsradar": {
+           "command": "node",
+           "args": ["/absolute/path/to/leadsradar-agent.mjs"],
+           "env": { "LEADSRADAR_AGENT_HOST": "claude" }
+         }
+       }
+     }
+     ```
+
+     Codex CLI (`~/.codex/config.toml`):
+     ```toml
+     [mcp_servers.leadsradar]
+     command = "node"
+     args = ["/absolute/path/to/leadsradar-agent.mjs"]
+     env = { LEADSRADAR_AGENT_HOST = "claude" }
+     ```
+
+     Then say "check LeadsRadar connection" to your AI, and **verify the fingerprint + click Approve** in the extension's settings. Zero-dependency single file, no `npm install`.
 3. **Install the skills** — add the `SKILL.md` files under `skills/` to your host's skill library. **Start with Quick Research** — usable the day you install it.
 
 ## Security & privacy

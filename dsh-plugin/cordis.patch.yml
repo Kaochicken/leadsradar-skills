@@ -1,0 +1,5 @@
+# ⭐r94 探栗 dsh 组合包 patch：只挂插件本体行——mcp-client 由 index.js 的 apply() 动态注册
+# （零路径配置：适配器包内自带 + process.execPath 复用宿主运行时）
+- insert:
+    - id: leadsradar
+      name: dsh-plugin-leadsradar

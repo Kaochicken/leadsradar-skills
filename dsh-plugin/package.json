@@ -1,0 +1,16 @@
+{
+  "name": "dsh-plugin-leadsradar",
+  "version": "1.0.0",
+  "description": "LeadsRadar (探栗) adapter for DeepSeek Harness — brings leadsradar_* MCP tools into dsh via the official dsh-mcp-client (stdio).",
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "cordis.patch.yml", "leadsradar-agent.mjs"],
+  "dependencies": {
+    "@deepseek-ai/dsh-mcp-client": "*"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
