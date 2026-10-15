@@ -2,7 +2,7 @@
 
 [English](README_en.md) | 中文
 
-![version](https://img.shields.io/badge/version-1.0.0-E63946) ![hosts](https://img.shields.io/badge/hosts-WorkBuddy%20%7C%20%E8%B1%86%E5%8C%85%E5%B7%A5%E4%BD%9C%20%7C%20Codex-3B82F6) ![platform](https://img.shields.io/badge/platform-%E5%B0%8F%E7%BA%A2%E4%B9%A6%20%7C%20%E6%8A%96%E9%9F%B3-8A8A8C)
+![version](https://img.shields.io/badge/version-1.0.0-E63946) ![hosts](https://img.shields.io/badge/hosts-WorkBuddy%20%7C%20%E8%B1%86%E5%8C%85%E5%B7%A5%E4%BD%9C%20%7C%20Codex%20%7C%20Claude%20%7C%20Trae%20%7C%20DeepSeek-3B82F6) ![platform](https://img.shields.io/badge/platform-%E5%B0%8F%E7%BA%A2%E4%B9%A6%20%7C%20%E6%8A%96%E9%9F%B3-8A8A8C)
 
 > 把你的 AI 助手变成获客雷达的远程驾驶员——**手机上发一句话，电脑上的探栗插件替你跑腿**。
 
@@ -70,13 +70,31 @@ Chrome 探栗插件（数据全部在本机浏览器内采集）
 
 </details>
 
-**方式二 · Codex / Claude Desktop 等 STDIO MCP 宿主（手动）**
+**方式二 · Trae（一键导入）**
+
+在浏览器地址栏打开下面的链接，Trae 会自动唤起并填好配置（国内版；海外版把前缀 `trae-cn` 换成 `trae`）：
+
+```
+trae-cn://trae.ai-ide/mcp-import?type=stdio&name=leadsradar&config=eyJtY3BTZXJ2ZXJzIjp7ImxlYWRzcmFkYXIiOnsiY29tbWFuZCI6Im5weCIsImFyZ3MiOlsiLXkiLCJsZWFkc3JhZGFyLWFnZW50Il0sImVudiI6eyJMRUFEU1JBREFSX0FHRU5UX0hPU1QiOiJ0cmFlIn19fX0%3D
+```
+
+首次使用会自动从 npm 拉取 [`leadsradar-agent`](https://www.npmjs.com/package/leadsradar-agent)，然后在探栗插件里核对指纹并批准配对即可。
+
+**方式三 · DeepSeek（DSH 官方插件）**
+
+```bash
+dsh plugin add leadsradar-dsh-plugin
+```
+
+npm 包 [`leadsradar-dsh-plugin`](https://www.npmjs.com/package/leadsradar-dsh-plugin) 已发布。装完对 DeepSeek 说「检查探栗连接」，按提示在插件里批准配对。
+
+**方式四 · Codex / Claude Desktop 等 STDIO MCP 宿主（手动）**
 
 ```bash
 codex plugin marketplace add https://github.com/Kaochicken/leadsradar-skills
 ```
 
-或手动配置：命令 `node`，参数为 `leadsradar-agent.mjs` 绝对路径，环境变量 `LEADSRADAR_AGENT_HOST` 填宿主标识。接入包零依赖单文件，无需 npm install。
+或手动配置：命令 `node`，参数为 `leadsradar-agent.mjs` 绝对路径（也可直接用 `npx -y leadsradar-agent`），环境变量 `LEADSRADAR_AGENT_HOST` 填宿主标识（如 `codex` / `claude`）。接入包零依赖单文件，无需 npm install。
 
 ### 第 3 步：装官方技能
 
