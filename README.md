@@ -2,7 +2,7 @@
 
 [English](README_en.md) | 中文
 
-![version](https://img.shields.io/badge/version-1.0.0-E63946) ![hosts](https://img.shields.io/badge/hosts-WorkBuddy%20%7C%20%E8%B1%86%E5%8C%85%E5%B7%A5%E4%BD%9C%20%7C%20Codex%20%7C%20Claude%20%7C%20Trae%20%7C%20DeepSeek-3B82F6) ![platform](https://img.shields.io/badge/platform-%E5%B0%8F%E7%BA%A2%E4%B9%A6%20%7C%20%E6%8A%96%E9%9F%B3-8A8A8C)
+![version](https://img.shields.io/badge/version-1.0.0-E63946) ![hosts](https://img.shields.io/badge/hosts-WorkBuddy%20%7C%20%E8%B1%86%E5%8C%85%E5%B7%A5%E4%BD%9C%20%7C%20%E5%8D%83%E9%97%AE%E5%8A%9E%E5%85%AC%20%7C%20Trae%20%7C%20DeepSeek-3B82F6) ![platform](https://img.shields.io/badge/platform-%E5%B0%8F%E7%BA%A2%E4%B9%A6%20%7C%20%E6%8A%96%E9%9F%B3-8A8A8C)
 
 > 把你的 AI 助手变成获客雷达的远程驾驶员——**手机上发一句话，电脑上的探栗插件替你跑腿**。
 
@@ -86,19 +86,29 @@ trae-cn://trae.ai-ide/mcp-import?type=stdio&name=leadsradar&config=eyJtY3BTZXJ2Z
 dsh plugin add leadsradar-dsh-plugin
 ```
 
-npm 包 [`leadsradar-dsh-plugin`](https://www.npmjs.com/package/leadsradar-dsh-plugin) 已发布。装完对 DeepSeek 说「检查探栗连接」，按提示在插件里批准配对。
+npm 包 [`leadsradar-dsh-plugin`](https://www.npmjs.com/package/leadsradar-dsh-plugin) 已发布。装完对 DeepSeek 说「检查探栗连接」，按提示在插件里批准配对。若你的 DSH 版本添加插件只认本地路径，克隆本仓库后直接添加 `dsh-plugin/` 文件夹即可。
 
-**方式四 · Codex / Claude Desktop 等 STDIO MCP 宿主（手动）**
+**方式四 · 千问办公（STDIO 连接器）**
 
-```bash
-codex plugin marketplace add https://github.com/Kaochicken/leadsradar-skills
+左侧**连接器 → 添加 → 粘贴 JSON**（npx 形态无需下载文件）：
+
+```json
+{
+  "mcpServers": {
+    "leadsradar": {
+      "command": "npx",
+      "args": ["-y", "leadsradar-agent"],
+      "env": { "LEADSRADAR_AGENT_HOST": "qwen-office" }
+    }
+  }
+}
 ```
 
-或手动配置：命令 `node`，参数为 `leadsradar-agent.mjs` 绝对路径（也可直接用 `npx -y leadsradar-agent`），环境变量 `LEADSRADAR_AGENT_HOST` 填宿主标识（如 `codex` / `claude`）。接入包零依赖单文件，无需 npm install。
+其他 STDIO MCP 宿主同理：命令 `node`，参数为 `leadsradar-agent.mjs` 绝对路径（或直接 `npx -y leadsradar-agent`），环境变量 `LEADSRADAR_AGENT_HOST` 填宿主标识。接入包零依赖单文件，无需 npm install。
 
 ### 第 3 步：装官方技能
 
-把 `skills/` 下需要的 `SKILL.md` 内容加入宿主技能库（WorkBuddy 技能页 / 豆包智能体指令 / Codex 插件配置）。**建议从「随手调研」开始——装完当天就能用。**
+把 `skills/` 下需要的 `SKILL.md` 内容加入宿主技能库（WorkBuddy 技能页 / 豆包智能体指令 / 千问办公技能库）。**建议从「随手调研」开始——装完当天就能用。**
 
 ## 安全与隐私
 

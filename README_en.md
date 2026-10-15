@@ -2,7 +2,7 @@
 
 English | [中文](README.md)
 
-![version](https://img.shields.io/badge/version-1.0.0-E63946) ![hosts](https://img.shields.io/badge/hosts-WorkBuddy%20%7C%20Doubao%20%7C%20Codex%20%7C%20Claude%20%7C%20Trae%20%7C%20DeepSeek-3B82F6) ![platform](https://img.shields.io/badge/platform-Xiaohongshu%20%7C%20Douyin-8A8A8C)
+![version](https://img.shields.io/badge/version-1.0.0-E63946) ![hosts](https://img.shields.io/badge/hosts-WorkBuddy%20%7C%20Doubao%20%7C%20Qwen%20Office%20%7C%20Trae%20%7C%20DeepSeek-3B82F6) ![platform](https://img.shields.io/badge/platform-Xiaohongshu%20%7C%20Douyin-8A8A8C)
 
 > Turn your AI assistant into a remote pilot for the LeadsRadar lead-gen extension — **one sentence from your phone, the browser extension on your PC does the legwork.**
 
@@ -49,36 +49,19 @@ Each skill is a `SKILL.md` you drop into your host's skill/instruction library:
      trae://trae.ai-ide/mcp-import?type=stdio&name=leadsradar&config=eyJtY3BTZXJ2ZXJzIjp7ImxlYWRzcmFkYXIiOnsiY29tbWFuZCI6Im5weCIsImFyZ3MiOlsiLXkiLCJsZWFkc3JhZGFyLWFnZW50Il0sImVudiI6eyJMRUFEU1JBREFSX0FHRU5UX0hPU1QiOiJ0cmFlIn19fX0%3D
      ```
    - **DeepSeek (DSH plugin)**: `dsh plugin add leadsradar-dsh-plugin` — published on [npm](https://www.npmjs.com/package/leadsradar-dsh-plugin). Then say "check LeadsRadar connection" and approve the pairing in the extension.
-   - **Coding agents (Claude Code / Codex CLI / Cursor / Gemini CLI — any STDIO MCP host, manual)**:
-     Get `leadsradar-agent.mjs` first (clone this repo, or click "one-click copy" for any host in the extension's *Settings → Agent takeover* — it auto-downloads to your Downloads folder), then configure:
-
-     Claude Code (one command):
-     ```bash
-     claude mcp add leadsradar -e LEADSRADAR_AGENT_HOST=claude -- node /absolute/path/to/leadsradar-agent.mjs
-     ```
-
-     Cursor / generic (`mcp.json`):
+   - **Qwen Office (STDIO connector)**: left sidebar → *Connectors → Add* → paste this JSON:
      ```json
      {
        "mcpServers": {
          "leadsradar": {
-           "command": "node",
-           "args": ["/absolute/path/to/leadsradar-agent.mjs"],
-           "env": { "LEADSRADAR_AGENT_HOST": "claude" }
+           "command": "npx",
+           "args": ["-y", "leadsradar-agent"],
+           "env": { "LEADSRADAR_AGENT_HOST": "qwen-office" }
          }
        }
      }
      ```
-
-     Codex CLI (`~/.codex/config.toml`):
-     ```toml
-     [mcp_servers.leadsradar]
-     command = "node"
-     args = ["/absolute/path/to/leadsradar-agent.mjs"]
-     env = { LEADSRADAR_AGENT_HOST = "claude" }
-     ```
-
-     Then say "check LeadsRadar connection" to your AI, and **verify the fingerprint + click Approve** in the extension's settings. Zero-dependency single file, no `npm install`.
+   - **Any other STDIO MCP host (manual)**: command `node`, args = absolute path to `leadsradar-agent.mjs` (or just `npx -y leadsradar-agent`), env `LEADSRADAR_AGENT_HOST` = your host id. Then say "check LeadsRadar connection" to your AI, and **verify the fingerprint + click Approve** in the extension's settings. Zero-dependency single file, no `npm install`.
 3. **Install the skills** — add the `SKILL.md` files under `skills/` to your host's skill library. **Start with Quick Research** — usable the day you install it.
 
 ## Security & privacy
