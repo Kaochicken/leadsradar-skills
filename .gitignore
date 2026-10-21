@@ -1,6 +1,9 @@
 # 适配器运行时生成的设备私钥，严禁提交
 .agent-key.json
 
+# npm 登录凭证（沙箱重定向用），严禁提交
+.npmrc
+
 node_modules/
 *.log
 .DS_Store

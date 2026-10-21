@@ -34,10 +34,13 @@ Each skill is a `SKILL.md` you drop into your host's skill/instruction library:
 
 | Skill | One-liner | Status |
 |---|---|---|
-| **[Quick Research](skills/leadsradar-research/)** | Send a link / keyword / screenshot, get customer leads & niche insights instantly | ✅ |
-| **[Asset Butler](skills/leadsradar-assets/)** | Send a post link + one sentence — save topic, download media, extract copy | ✅ |
-| **[Benchmark Patrol](skills/leadsradar-patrol/)** | Scan benchmark accounts — who updated, who went viral | ✅ |
-| **[Data Q&A](skills/leadsradar-insights/)** | Just ask: topic library, posts, accounts, comments, research reports | ✅ |
+| **[Radar · Intel Chestnut](skills/leadsradar-radar/)** | Send a link / keyword + "tan yi xia" — instant lead reports, niche opportunities & benchmark patrol | ✅ |
+| **[Insights Chestnut](skills/leadsradar-insights/)** | Break down why a post went viral; look up & translate past research reports | ✅ |
+| **[Creator Chestnut](skills/leadsradar-creator/)** | Send a post link + one sentence — save topic, download media, extract copy | ✅ |
+| **[Closer Chestnut](skills/leadsradar-closer/)** | Mine customers from comments — intent grading, follow-up lists, ready-to-send replies | ✅ |
+| **[Helper Chestnut](skills/leadsradar-helper/)** | Front desk for the "Lizi" wake word — check connection/login, report inventory, answer FAQs | ✅ |
+
+**Wake words**: address your AI with **"Lizi"（栗子）** (e.g. "栗子，存一下这个选题 / Lizi, save this topic") or start with **"探一下 / tan yi xia"** (e.g. "探一下：家装获客这个词还有机会吗") to invoke the skills — "探栗 / LeadsRadar" also works; clear intent triggers them even without a wake word.
 
 ## 3-minute setup
 
@@ -74,7 +77,7 @@ Each skill is a `SKILL.md` you drop into your host's skill/instruction library:
 
 ## Community skills
 
-Beyond the official four, PR your own playbooks (Feishu sync, private-domain SOP, daily digest push…) as `SKILL.md` — merged ones get listed here with your name on them.
+Beyond the official five, PR your own playbooks (Feishu sync, private-domain SOP, daily digest push…) as `SKILL.md` — merged ones get listed here with your name on them.
 
 ## Support
 

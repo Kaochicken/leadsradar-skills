@@ -1,13 +1,9 @@
 {
-  "name": "dsh-plugin-leadsradar",
-  "version": "1.0.0",
-  "description": "LeadsRadar (探栗) adapter for DeepSeek Harness — brings leadsradar_* MCP tools into dsh via the official dsh-mcp-client (stdio).",
-  "type": "module",
-  "main": "index.js",
-  "files": ["index.js", "cordis.patch.yml", "leadsradar-agent.mjs"],
-  "dependencies": {
-    "@deepseek-ai/dsh-mcp-client": "*"
-  },
+  "name": "leadsradar-dsh-plugin",
+  "version": "1.0.2",
+  "description": "探栗（LeadsRadar）AI 获客 · DeepSeek Harness 插件——再小的生意，也有自己的AI获客团队。宿主内置 dsh-mcp-client 以 stdio 拉起探栗适配器，带来 leadsradar_* MCP 工具与五大数字员工技能（情报栗现采现报/洞察栗拆解研究/创作栗存题下素材/成交栗评论挖客/管家栗调度应答）。",
+  "icon": "icon.png",
+  "files": ["cordis.patch.yml", "leadsradar-agent.mjs", "icon.png", "locale/"],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

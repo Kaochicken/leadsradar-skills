@@ -1,5 +1,23 @@
-# ⭐r94 探栗 dsh 组合包 patch：只挂插件本体行——mcp-client 由 index.js 的 apply() 动态注册
-# （零路径配置：适配器包内自带 + process.execPath 复用宿主运行时）
+# ⭐r96 探栗 dsh 插件配置型 patch（r95 DSH 实测装通定案）
+# 纯静态配置直接引用宿主内置 @deepseek-ai/dsh-mcp-client——不写 index.js（裸包名动态 import ERR_MODULE_NOT_FOUND）、
+# 不声明 dependencies（镜像源远古版 0.0.1-rc.1 会遮蔽宿主自带 0.2.0-rc.2）；dsh.bundle 判定只查对象类型。
+# ⭐2026-10-15 1.0.1 云端直跑版：command 改 cmd /c npx——Windows 下 spawn 裸 npx 会 ENOENT（.cmd 不被解析），
+#   cmd /c 是 MCP 生态标准解法；npx 首跑从 npm 云端仓库拉 leadsradar-agent（自包含 bundle，密钥存
+#   ~/.leadsradar-agent-key-dsh.json，与本地文件流互不干扰）。装完即跑，零占位符零改路径。
+# 兜底（宿主 AI 收到启动报错时改写）：macOS/Linux 无 cmd——command 改本机 node 绝对路径、args 指向
+#   包内 leadsradar-agent.mjs（npx 缓存 node_modules/leadsradar-agent/leadsradar-agent.mjs）；
+#   Electron 宿主报 node 相关错误时在 env 下加一行 ELECTRON_RUN_AS_NODE: '1'
 - insert:
     - id: leadsradar
-      name: dsh-plugin-leadsradar
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: leadsradar
+        transport: stdio
+        command: cmd
+        args:
+          - '/c'
+          - 'npx'
+          - '-y'
+          - 'leadsradar-agent'
+        env:
+          LEADSRADAR_AGENT_HOST: dsh

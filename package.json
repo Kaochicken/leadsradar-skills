@@ -1,11 +1,11 @@
 {
   "name": "leadsradar-agent",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "探栗（LeadsRadar）AI 助手接入包——让豆包工作 / WorkBuddy / Codex / Claude 直接管住你的小红书·抖音获客雷达，全程本机流转",
   "type": "module",
   "main": "leadsradar-agent.mjs",
   "bin": {
-    "leadsradar-agent": "./leadsradar-agent.mjs"
+    "leadsradar-agent": "leadsradar-agent.mjs"
   },
   "files": [
     "leadsradar-agent.mjs",

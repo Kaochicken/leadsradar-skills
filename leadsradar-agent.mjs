@@ -3733,16 +3733,18 @@ import {
   createHash,
   createPrivateKey
 } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, copyFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { createServer as createHttpServer } from "node:http";
+import { createConnection } from "node:net";
+import { execFile, spawn } from "node:child_process";
 var __dirname = dirname(fileURLToPath(import.meta.url));
 var PORT = Number(process.env.LEADSRADAR_AGENT_PORT) || 17373;
 var PROTOCOL_VERSION = "3";
-var ADAPTER_VERSION = "1.2.9";
+var ADAPTER_VERSION = "1.2.19";
 var HOST_LABELS = {
   "doubao-work": "\u8C46\u5305\u5DE5\u4F5C",
   // ⭐r85 字节系多客户端实测（用户已验证豆包客户端支持 stdio 连接器，与豆包工作同源）：
@@ -3755,18 +3757,97 @@ var HOST_LABELS = {
   coze: "\u6263\u5B50",
   // ⭐r93 DeepSeek Harness（dsh）：一切皆插件架构，MCP 走官方 dsh-mcp-client（stdio），工具名带 mcp__leadsradar__ 前缀
   dsh: "DeepSeek",
+  // ⭐r96g Codex 回归（r94 放弃后用户拍板回归，CLI·进阶档）：~/.codex/config.toml（TOML mcp_servers 段）
   codex: "Codex",
-  claude: "Claude"
+  claude: "Claude",
+  // ⭐r96 千问办公：连接器入口「左侧连接器 → 添加」，支持粘贴 JSON / 手动填写（与豆包同款 STDIO 型）
+  "qwen-office": "\u5343\u95EE\u529E\u516C",
+  // ⭐r96e Trae（编程 CLI 宿主首个）：项目 .trae/mcp.json 配置拉起，本仓 dogfooding 实测
+  trae: "Trae",
+  // ⭐r96g CLI·进阶档扩容：Cherry Studio（设置→MCP 服务器→添加服务器 STDIO）；⭐r96t 删阶跃 AI（渠道下线）
+  cherry: "Cherry Studio"
 };
 var HOST = (process.env.LEADSRADAR_AGENT_HOST || "doubao-work").toLowerCase();
 var HTTP_MODE = process.argv.includes("--http") || process.env.LEADSRADAR_AGENT_HTTP === "1";
-var HTTP_PORT = Number(process.env.LEADSRADAR_AGENT_HTTP_PORT) || 17374;
+var HTTP_PORT = Number(process.env.LEADSRADAR_AGENT_HTTP_PORT) || 17375;
 var DEVICE_NAME = process.env.LEADSRADAR_AGENT_DEVICE_NAME || `\u63A2\u6817 Agent (${HOST_LABELS[HOST] || "\u672C\u673A"})`;
 var DEVICE_ID = `leadsradar-agent-${HOST.replace(/[^a-z0-9-]/g, "") || "local"}`;
 var KEY_FILE = join(homedir(), `.leadsradar-agent-key-${HOST}.json`);
 var LEGACY_KEY_FILE = join(__dirname, ".agent-key.json");
 function log(...args) {
   process.stderr.write(args.join(" ") + "\n");
+}
+var __extProfileCache = { at: 0, result: null };
+function detectExtensionProfiles() {
+  if (Date.now() - __extProfileCache.at < 1e4) return __extProfileCache.result;
+  const found = [];
+  const roots = [
+    { browser: "chrome", dir: join(homedir(), "AppData/Local/Google/Chrome/User Data") },
+    { browser: "msedge", dir: join(homedir(), "AppData/Local/Microsoft/Edge/User Data") }
+  ];
+  for (const { browser, dir } of roots) {
+    let profiles = [];
+    try {
+      profiles = readdirSync(dir).filter((n) => n === "Default" || /^Profile /.test(n));
+    } catch {
+      continue;
+    }
+    for (const prof of profiles) {
+      if (found.some((f) => f.browser === browser && f.profile === prof)) continue;
+      for (const file of ["Secure Preferences", "Preferences"]) {
+        const p = join(dir, prof, file);
+        let text = null;
+        try {
+          const tmp = `${p}.lf-probe.tmp`;
+          copyFileSync(p, tmp);
+          text = readFileSync(tmp, "utf8");
+          unlinkSync(tmp);
+        } catch {
+          continue;
+        }
+        try {
+          const settings = JSON.parse(text)?.extensions?.settings || {};
+          for (const v of Object.values(settings)) {
+            const extPath = String(v?.path || "");
+            if (extPath && /leads?find|leads?radar/i.test(extPath)) {
+              found.push({ browser, profile: prof });
+              break;
+            }
+          }
+        } catch {
+        }
+        if (found.some((f) => f.browser === browser && f.profile === prof)) break;
+      }
+    }
+  }
+  __extProfileCache = { at: Date.now(), result: found };
+  return found;
+}
+function preferredBrowser() {
+  try {
+    const appData = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
+    const cfgPath = join(appData, "leadsradar", "service", "config.json");
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+    const db = String(cfg.defaultBrowser || "").trim();
+    return db || null;
+  } catch {
+    return null;
+  }
+}
+function extensionLaunchHint() {
+  let found = detectExtensionProfiles();
+  if (!found.length) return null;
+  const pref = preferredBrowser();
+  if (pref) {
+    const pinned = found.filter((f) => f.browser === pref || pref === "edge" && f.browser === "msedge");
+    if (pinned.length) {
+      found = pinned;
+      const cmd2 = found.map((f) => `start ${f.browser} '-profile-directory="${f.profile}"'`).join(" \u6216 ");
+      return `\u5DF2\u6309\u63A2\u6817 MCP \u8BBE\u7F6E\u56FA\u5B9A ${pref === "edge" ? "Edge" : "Chrome"} \u4E3A\u9ED8\u8BA4\u6D4F\u89C8\u5668\u2014\u2014\u8FD0\u884C ${cmd2} \u6253\u5F00\u5B83\uFF0C\u63D2\u4EF6\u7EA6 5 \u79D2\u81EA\u52A8\u91CD\u8FDE\u540E\u91CD\u8BD5`;
+    }
+  }
+  const cmd = found.map((f) => `start ${f.browser} '-profile-directory="${f.profile}"'`).join(" \u6216 ");
+  return `\u5DF2\u63A2\u6D4B\u5230\u63D2\u4EF6\u88C5\u5728 ${found.map((f) => `${f.browser === "msedge" ? "Edge" : "Chrome"} \u7684 ${f.profile}`).join(" \u548C ")}\u2014\u2014\u82E5\u4F60\u6709\u7EC8\u7AEF\u6743\u9650\uFF0C\u8FD0\u884C ${cmd} \u6253\u5F00\u5BF9\u5E94\u7A97\u53E3\uFF0C\u63D2\u4EF6\u7EA6 5 \u79D2\u81EA\u52A8\u91CD\u8FDE\u540E\u91CD\u8BD5`;
 }
 function loadOrCreateKeys() {
   for (const f of [KEY_FILE, LEGACY_KEY_FILE]) {
@@ -3820,7 +3901,9 @@ var AgentBroker = class {
     this.extension = { connected: false, extensionId: "", extensionVersion: "", sessionId: "", pendingResultCount: 0 };
     this.awaitingPairing = false;
     this.awaitingSince = 0;
+    this.selfPaired = false;
     this.lastDisconnect = "";
+    this.lastClose = null;
     this.client = null;
     this.downstreams = /* @__PURE__ */ new Map();
     this.relay = null;
@@ -3888,7 +3971,7 @@ var AgentBroker = class {
         this.wss = server;
         log(`[lf-agent] Broker \u5DF2\u76D1\u542C ws://127.0.0.1:${PORT}/extension`);
         log(`[lf-agent] \u8BBE\u5907\u300C${DEVICE_NAME}\u300D\u6307\u7EB9\uFF1A${fingerprint}`);
-        log(`[lf-agent] \u7B49\u5F85\u63D2\u4EF6\u8FDE\u63A5\uFF08\u63D2\u4EF6 \u2192 \u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u63A5\u7BA1 \u2192 \u6253\u5F00\u5F00\u5173\uFF09\u2026`);
+        log(`[lf-agent] \u7B49\u5F85\u63D2\u4EF6\u8FDE\u63A5\uFF08\u63D2\u4EF6 \u2192 \u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u8FDE\u63A5 \u2192 \u6253\u5F00\u5F00\u5173\uFF09\u2026`);
       });
       attach(server);
     };
@@ -3989,6 +4072,8 @@ var AgentBroker = class {
         } catch {
         }
         this.broadcastDevices();
+        // ⭐R56 卫星挂入即推一次当前插件状态（含登录态）——否则插件一直在线无状态变化时，卫星要等到下次断/连才拿得到 account
+        this.notifyDownstreamsExtension(this.extension.connected);
         return;
       }
       if (ws.__lfDownstreamId) {
@@ -4083,7 +4168,7 @@ var AgentBroker = class {
           if (!this.awaitingPairing) {
             this.awaitingPairing = true;
             this.awaitingSince = Date.now();
-            log(`[lf-agent] \u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF08\u8BBE\u7F6E\u9875 \u2192 \u667A\u80FD\u4F53\u63A5\u7BA1 \u2192 \u5F85\u6279\u51C6\u8BBE\u5907\u300C${DEVICE_NAME}\u300D\uFF09`);
+            log(`[lf-agent] \u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF08\u8BBE\u7F6E\u9875 \u2192 \u667A\u80FD\u4F53\u8FDE\u63A5 \u2192 \u5F85\u6279\u51C6\u8BBE\u5907\u300C${DEVICE_NAME}\u300D\uFF09`);
             log(`[lf-agent] \u6307\u7EB9\u6838\u5BF9\uFF1A${fingerprint}`);
           }
           pokeHandshake();
@@ -4099,12 +4184,30 @@ var AgentBroker = class {
             extensionVersion: String(msg.extensionVersion || ""),
             sessionId: String(msg.sessionId || ""),
             pendingResultCount: Number(msg.pendingResultCount) || 0,
+            // ⭐B7b-P1 未领取结果摘要透传（connection_status 展示 + claim_pending_result 领取引导）；
+            // 旧版插件 hello 无此字段=空数组（不保留上次值：摘要必须与插件真源同步，宁缺勿旧）
+            pendingResults: Array.isArray(msg.pendingResults) ? msg.pendingResults.slice(0, 10) : [],
             // ⭐r81 P0-3 登录态随握手上报（宿主 connection_status 可见，需登录的动作可动手前预检）；
             // 旧 hello 无此字段时保留上次值（防重握手瞬间丢登录态）
             account: msg.account ? { loggedIn: msg.account.loggedIn === true, nickname: String(msg.account.nickname || "") || null } : this.extension.account || null
           };
           log(`[lf-agent] \u5DF2\u8FDE\u63A5\u63D2\u4EF6 ${this.extension.extensionId} v${this.extension.extensionVersion}`);
           this.notifyDownstreamsExtension(true);
+          return;
+        }
+        case "extension.account.update": {
+          if (msg.account) {
+            this.extension = {
+              ...this.extension,
+              account: {
+                loggedIn: msg.account.loggedIn === true,
+                nickname: String(msg.account.nickname || "") || null
+              }
+            };
+            log(`[lf-agent] \u767B\u5F55\u6001\u66F4\u65B0\uFF1A${msg.account.loggedIn === true ? `\u5DF2\u767B\u5F55\uFF08${msg.account.nickname || "?"}\uFF09` : "\u672A\u767B\u5F55"}`);
+            // ⭐R56 登录态变化实时转发卫星（幂等重推 connected/pendingResults 无副作用）
+            this.notifyDownstreamsExtension(this.extension.connected);
+          }
           return;
         }
         case "task.progress": {
@@ -4207,7 +4310,7 @@ var AgentBroker = class {
           return;
       }
     });
-    ws.on("close", () => {
+    ws.on("close", (code, reasonBuf) => {
       if (pokeTimer) clearTimeout(pokeTimer);
       clearInterval(pingTimer);
       if (ws.__lfDownstreamId) {
@@ -4223,11 +4326,14 @@ var AgentBroker = class {
       if (this.client === ws) {
         this.client = null;
         this.clientExtensionId = null;
+        const closeReason = String(reasonBuf?.toString?.("utf8") || "");
+        this.lastClose = { code: Number(code) || 0, reason: closeReason, at: (/* @__PURE__ */ new Date()).toISOString() };
         if (this.extension.connected) {
           this.extension = { ...this.extension, connected: false };
           this.lastDisconnect = (/* @__PURE__ */ new Date()).toISOString();
-          log("[lf-agent] \u63D2\u4EF6\u65AD\u5F00\uFF08\u7B49\u63D2\u4EF6\u81EA\u52A8\u91CD\u8FDE\uFF1B\u82E5\u957F\u65F6\u95F4\u672A\u6062\u590D\uFF0C\u68C0\u67E5\u63D2\u4EF6\u5F00\u5173/\u91CD\u8F7D\u63D2\u4EF6\uFF09");
-          this.notifyDownstreamsExtension(false);
+          log(`[lf-agent] \u63D2\u4EF6\u65AD\u5F00\uFF08close code=${code}${closeReason ? ` reason="${closeReason}"` : ""}\uFF1B\u7B49\u63D2\u4EF6\u81EA\u52A8\u91CD\u8FDE\uFF1B\u82E5\u957F\u65F6\u95F4\u672A\u6062\u590D\uFF0C\u68C0\u67E5\u63D2\u4EF6\u5F00\u5173/\u91CD\u8F7D\u63D2\u4EF6\uFF09`);
+          this.abortPendingTasks();
+          this.notifyDownstreamsExtension(false, this.lastClose);
         }
         if (this.awaitingPairing) {
           this.awaitingPairing = false;
@@ -4243,11 +4349,12 @@ var AgentBroker = class {
     const devices = [DEVICE, ...[...this.downstreams.values()].map((d) => d.device)];
     this.send({ type: "broker.hello", protocolVersion: PROTOCOL_VERSION, serverName: "LeadsRadar Agent Adapter", devices });
   }
-  /** 插件在线状态变化时通知所有卫星（卫星据此维护自己的 extension.connected / step） */
-  notifyDownstreamsExtension(connected) {
+  /** 插件在线状态变化时通知所有卫星（卫星据此维护自己的 extension.connected / step）；⭐1.2.17 B3：断开时顺带透传 close frame 诊断；
+   *  ⭐R56 登录态随状态透传卫星（WorkBuddy 中转实测 loggedIn 恒 null——卫星侧 connection_status 只能兜底，存选题预检失效） */
+  notifyDownstreamsExtension(connected, lastClose = null) {
     for (const entry of this.downstreams.values()) {
       try {
-        entry.ws.send(JSON.stringify({ type: "device.extension.state", connected: connected === true }));
+        entry.ws.send(JSON.stringify({ type: "device.extension.state", connected: connected === true, lastClose: lastClose ? { code: lastClose.code, reason: lastClose.reason } : null, pendingResults: (this.extension.pendingResults || []).slice(0, 10), account: this.extension.account || null }));
       } catch {
       }
     }
@@ -4414,13 +4521,24 @@ var AgentBroker = class {
     switch (msg.type) {
       case "device.extension.state":
         relay.extensionConnected = msg.connected === true;
+        if (Array.isArray(msg.pendingResults)) {
+          this.extension = { ...this.extension, pendingResults: msg.pendingResults.slice(0, 10), pendingResultCount: msg.pendingResults.length };
+        }
+        // ⭐R56 登录态随中转状态到达（对齐 extension.hello 消费范式；旧主 Broker 不带此字段=保留上次值防清丢）
+        if (msg.account) {
+          this.extension = { ...this.extension, account: { loggedIn: msg.account.loggedIn === true, nickname: String(msg.account.nickname || "") || null } };
+        }
         if (msg.connected === true && this.awaitingPairing) {
           this.awaitingPairing = false;
           log("[lf-agent] \u536B\u661F\u6A21\u5F0F\u5DF2\u590D\u4F4D\u7B49\u5F85\u6279\u51C6\u72B6\u6001");
         }
         if (this.extension.connected !== relay.extensionConnected) {
           this.extension = { ...this.extension, connected: relay.extensionConnected };
-          if (!relay.extensionConnected) this.lastDisconnect = (/* @__PURE__ */ new Date()).toISOString();
+          if (!relay.extensionConnected) {
+            this.lastDisconnect = (/* @__PURE__ */ new Date()).toISOString();
+            if (relay.lastClose) this.lastClose = { code: relay.lastClose.code || 0, reason: relay.lastClose.reason || "", at: (/* @__PURE__ */ new Date()).toISOString() };
+            this.abortPendingTasks();
+          }
           log(`[lf-agent] \u4E2D\u8F6C\u901A\u77E5\uFF1A\u63D2\u4EF6${relay.extensionConnected ? "\u5DF2\u8FDE\u63A5" : "\u5DF2\u65AD\u5F00"}`);
         }
         return;
@@ -4433,6 +4551,14 @@ var AgentBroker = class {
         }
         return;
       case "device.challenge": {
+        const purposeNow = String((msg.challenge || {}).purpose ?? "");
+        if (purposeNow === "session" && !this.selfPaired) {
+          this.selfPaired = true;
+          log("[lf-agent] \u536B\u661F\u6A21\u5F0F\uFF1A\u6536\u5230 session \u6311\u6218\uFF08\u63D2\u4EF6\u5DF2\u8BA4\u672C\u8BBE\u5907\u4E3A\u5DF2\u914D\u5BF9\uFF09");
+        } else if (purposeNow === "pairing" && this.selfPaired) {
+          this.selfPaired = false;
+          log("[lf-agent] \u536B\u661F\u6A21\u5F0F\uFF1A\u6536\u5230 pairing \u6311\u6218\uFF08\u672C\u8BBE\u5907\u914D\u5BF9\u5DF2\u5931\u6548\uFF0C\u56DE\u5230\u5F85\u6279\u51C6\uFF09");
+        }
         const c = msg.challenge || {};
         const payload = [
           "mediaclaw-agent",
@@ -4510,6 +4636,45 @@ var AgentBroker = class {
     waiter.response = response;
     waiter.resolve(response);
   }
+  /** ⭐1.2.17 B3 断开原因诊断：按插件断开的 close frame（code+reason）给精准指引。
+   *  返回非空字符串=有诊断（调用方以此为首选指引，跳过 start chrome 类无效指引）；null=无可用诊断（回落旧文案）。
+   *  reason 真源在插件 local-agent-connector.ts：stop() 关开关 → "LF Agent disabled"；
+   *  stopForAvailability() 桥不可用 → "LF Agent bridge is not publicly available"；
+   *  浏览器被关/插件被禁用/重载 = SW 直接被杀无告别帧 → ws 层报 1006（1005/1001 同归异常断） */
+  disconnectDiagnosis() {
+    const c = this.lastClose;
+    if (!c) return null;
+    if (Date.now() - new Date(c.at).getTime() > 10 * 60 * 1e3) return null;
+    if (c.reason.includes("disabled")) {
+      return `\u8BCA\u65AD\uFF1A\u63D2\u4EF6\u7684\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u5F00\u5173\u88AB\u5173\u95ED\uFF08\u6D4F\u89C8\u5668\u8FD8\u5F00\u7740\uFF0C\u65E0\u9700\u91CD\u542F\uFF09\u2014\u2014\u8BF7\u7528\u6237\u5230\u63D2\u4EF6\u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u8FDE\u63A5 \u2192 \u91CD\u65B0\u6253\u5F00\u9876\u90E8\u5F00\u5173\uFF0C\u914D\u5BF9\u5173\u7CFB\u4FDD\u7559\uFF0C\u7EA6 5 \u79D2\u81EA\u52A8\u91CD\u8FDE\u540E\u91CD\u8BD5`;
+    }
+    if (c.reason.includes("not publicly available")) {
+      return `\u8BCA\u65AD\uFF1A\u63D2\u4EF6\u4FA7\u5224\u5B9A\u672C\u5730\u6865\u4E0D\u53EF\u7528\u5DF2\u81EA\u52A8\u65AD\u5F00\u2014\u2014\u8BF7\u7528\u6237\u91CD\u542F\u6D4F\u89C8\u5668\uFF0C\u518D\u5230\u63D2\u4EF6\u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u8FDE\u63A5\u91CD\u65B0\u6253\u5F00\u5F00\u5173`;
+    }
+    if (c.code === 1006 || c.code === 1005 || c.code === 1001) {
+      return `\u8BCA\u65AD\uFF1A\u8FDE\u63A5\u88AB\u76F4\u63A5\u5207\u65AD\uFF08\u6D4F\u89C8\u5668\u88AB\u5173\u95ED\uFF0C\u6216\u63D2\u4EF6\u88AB\u7981\u7528/\u91CD\u8F7D\u2014\u2014\u65E0\u544A\u522B\u5E27\uFF09\u2014\u2014\u8BF7\u7528\u6237\u91CD\u5F00\u6D4F\u89C8\u5668\u5E76\u786E\u8BA4\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\uFF0C\u63D2\u4EF6\u7EA6 5 \u79D2\u81EA\u52A8\u91CD\u8FDE\u540E\u91CD\u8BD5`;
+    }
+    if (c.code === 1e3 && c.reason) {
+      return `\u8BCA\u65AD\uFF1A\u63D2\u4EF6\u4E3B\u52A8\u65AD\u5F00\uFF08${c.reason}\uFF09\u2014\u2014\u8BF7\u7528\u6237\u68C0\u67E5\u63D2\u4EF6\u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u8FDE\u63A5\u7684\u5F00\u5173\u72B6\u6001\u540E\u91CD\u8BD5`;
+    }
+    return null;
+  }
+  /** ⭐1.2.16 B7：插件连接断开时中止所有等待中的任务（浏览器被关/插件掉线不再傻等 TASK_TIMEOUT，秒级返回失败） */
+  abortPendingTasks() {
+    if (!this.taskWaiters.size) return;
+    const ids = [...this.taskWaiters.keys()];
+    log(`[lf-agent] \u63D2\u4EF6\u65AD\u5F00 \u2192 \u79D2\u7EA7\u4E2D\u6B62 ${ids.length} \u4E2A\u7B49\u5F85\u4E2D\u7684\u4EFB\u52A1`);
+    for (const id of ids) {
+      this.finishTask(id, {
+        ok: false,
+        error: {
+          code: "TASK_ABORTED",
+          // ⭐1.2.17 B3：诊断优先（开关关→指开关；被杀→指重开浏览器），无诊断才回落探测命令
+          message: `\u63D2\u4EF6\u8FDE\u63A5\u5DF2\u65AD\u5F00\uFF0C\u4EFB\u52A1\u5DF2\u4E2D\u6B62\u3002${this.disconnectDiagnosis() || extensionLaunchHint() || "\u8BF7\u91CD\u5F00\u6D4F\u89C8\u5668\uFF08\u63D2\u4EF6\u7EA6 5 \u79D2\u81EA\u52A8\u91CD\u8FDE\uFF09\u540E\u91CD\u8BD5\u3002"}`
+        }
+      });
+    }
+  }
   /**
    * 下发任务并等待结果。
    * @returns {Promise<{ok:boolean, error?:object, [k:string]:unknown}>}
@@ -4517,11 +4682,12 @@ var AgentBroker = class {
   startTask(task, timeoutMs = LIST_TASK_TIMEOUT_MS) {
     if (this.relay) return this.startTaskViaRelay(task, timeoutMs);
     if (!this.extension.connected) {
+      const diag = this.disconnectDiagnosis();
       return Promise.resolve({
         ok: false,
         error: {
           code: "EXTENSION_NOT_CONNECTED",
-          message: this.awaitingPairing ? "\u63D2\u4EF6\u5DF2\u68C0\u6D4B\u5230\u672C\u8BBE\u5907\uFF0C\u4F46\u5C1A\u672A\u6279\u51C6\u914D\u5BF9\u3002\u8BF7\u8BA9\u7528\u6237\u5728\u63D2\u4EF6\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u63A5\u7BA1\u300D\u4E2D\u6838\u5BF9\u8BBE\u5907\u6307\u7EB9\u5E76\u70B9\u51FB\u6279\u51C6\uFF0C\u7136\u540E\u91CD\u8BD5\u3002" : "\u672A\u8FDE\u63A5\u5230\u63A2\u6817\uFF08LeadsRadar\uFF09\u6D4F\u89C8\u5668\u63D2\u4EF6\u3002\u82E5\u4F60\u6709\u7EC8\u7AEF\u6743\u9650\uFF0C\u53EF\u76F4\u63A5\u8FD0\u884C start chrome\uFF08\u6216 start msedge\uFF09\u6253\u5F00\u6D4F\u89C8\u5668\uFF0C\u63D2\u4EF6\u4F1A\u81EA\u52A8\u91CD\u8FDE\uFF08\u7EA6\u7B49 5 \u79D2\u518D\u91CD\u8BD5\uFF09\uFF1B\u5426\u5219\u8BF7\u8BA9\u7528\u6237\uFF1A1) \u6253\u5F00\u6D4F\u89C8\u5668\u5E76\u786E\u8BA4\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\uFF1B2) \u63D2\u4EF6\u8BBE\u7F6E\u9875 \u2192\u300C\u667A\u80FD\u4F53\u63A5\u7BA1\u300D\u2192 \u5F00\u542F\u9876\u90E8\u5F00\u5173\uFF0C\u7136\u540E\u91CD\u8BD5\u3002"
+          message: this.awaitingPairing ? "\u63D2\u4EF6\u5DF2\u68C0\u6D4B\u5230\u672C\u8BBE\u5907\uFF0C\u4F46\u5C1A\u672A\u6279\u51C6\u914D\u5BF9\u3002\u8BF7\u8BA9\u7528\u6237\u5728\u63D2\u4EF6\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u4E2D\u6838\u5BF9\u8BBE\u5907\u6307\u7EB9\u5E76\u70B9\u51FB\u6279\u51C6\uFF0C\u7136\u540E\u91CD\u8BD5\u3002" : diag ? `\u672A\u8FDE\u63A5\u5230\u63A2\u6817\uFF08LeadsRadar\uFF09\u6D4F\u89C8\u5668\u63D2\u4EF6\u3002${diag}\u3002` : `\u672A\u8FDE\u63A5\u5230\u63A2\u6817\uFF08LeadsRadar\uFF09\u6D4F\u89C8\u5668\u63D2\u4EF6\u3002${extensionLaunchHint() || "\u82E5\u4F60\u6709\u7EC8\u7AEF\u6743\u9650\uFF0C\u53EF\u76F4\u63A5\u8FD0\u884C start chrome\uFF08\u6216 start msedge\uFF09\u6253\u5F00\u6D4F\u89C8\u5668\uFF0C\u63D2\u4EF6\u4F1A\u81EA\u52A8\u91CD\u8FDE\uFF08\u7EA6\u7B49 5 \u79D2\u518D\u91CD\u8BD5\uFF09"}\uFF1B\u5426\u5219\u8BF7\u8BA9\u7528\u6237\uFF1A1) \u6253\u5F00\u6D4F\u89C8\u5668\u5E76\u786E\u8BA4\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\uFF1B2) \u63D2\u4EF6\u8BBE\u7F6E\u9875 \u2192\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u2192 \u5F00\u542F\u9876\u90E8\u5F00\u5173\uFF0C\u7136\u540E\u91CD\u8BD5\u3002`
         }
       });
     }
@@ -4533,7 +4699,7 @@ var AgentBroker = class {
           ok: false,
           error: {
             code: "TASK_TIMEOUT",
-            message: `\u4EFB\u52A1\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)}s\uFF09\u3002\u63D2\u4EF6\u53EF\u80FD\u88AB\u6D4F\u89C8\u5668\u4F11\u7720\u6216\u91C7\u96C6\u4E2D\u65AD\uFF0C\u53EF\u8BA9\u7528\u6237\u6253\u5F00\u4E00\u6B21\u63D2\u4EF6\u9762\u677F\u540E\u91CD\u8BD5\u3002`
+            message: `\u4EFB\u52A1\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)}s\uFF09\u3002\u6CE8\u610F\uFF1A\u63D2\u4EF6\u53EF\u80FD\u4ECD\u5728\u6267\u884C\uFF0C\u4E14\u91C7\u96C6\u6570\u636E\u4F1A\u5148\u843D\u63A2\u6817\u672C\u5730\u5E93\u2014\u2014\u8BF7\u5148\u7528 query_local_data \u67E5\u8BE2\u8BE5\u4EFB\u52A1\u7684 keyword/url \u5BF9\u5E94\u7ED3\u679C\uFF0C\u67E5\u5230\u5C31\u76F4\u63A5\u7528\u3001\u4E0D\u8981\u91CD\u53D1\uFF1B\u786E\u5B9E\u6CA1\u6709\u518D\u91CD\u53D1\u4EFB\u52A1\uFF08\u907F\u514D\u91CD\u590D\u6D88\u8017\u91C7\u96C6\u989D\u5EA6\uFF09\u3002`
           }
         });
       }, timeoutMs);
@@ -4546,11 +4712,12 @@ var AgentBroker = class {
   startTaskViaRelay(task, timeoutMs) {
     const relay = this.relay;
     if (!relay || !relay.attached || !relay.extensionConnected) {
+      const diag = this.disconnectDiagnosis();
       return Promise.resolve({
         ok: false,
         error: {
           code: "EXTENSION_NOT_CONNECTED",
-          message: this.awaitingPairing ? `\u63D2\u4EF6\u5DF2\u68C0\u6D4B\u5230\u672C\u8BBE\u5907\uFF08\u536B\u661F\u6A21\u5F0F\uFF09\uFF0C\u4F46\u5C1A\u672A\u6279\u51C6\u914D\u5BF9\u3002\u8BF7\u8BA9\u7528\u6237\u5728\u63D2\u4EF6\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u63A5\u7BA1\u300D\u4E2D\u6838\u5BF9\u8BBE\u5907\u6307\u7EB9\u5E76\u70B9\u51FB\u6279\u51C6\uFF0C\u7136\u540E\u91CD\u8BD5\u3002\u6307\u7EB9\uFF1A${fingerprint}` : `\u672A\u8FDE\u63A5\u5230\u63A2\u6817\u63D2\u4EF6\u3002\u5F53\u524D\u4E3A\u591A\u5BBF\u4E3B\u4E2D\u8F6C\u6A21\u5F0F\uFF08\u7AEF\u53E3\u88AB ${relay?.hostLabel || "\u53E6\u4E00\u5BBF\u4E3B"} \u7684\u9002\u914D\u5668\u5360\u7528\uFF0C\u672C\u8BBE\u5907\u7ECF\u5176\u4E2D\u8F6C\uFF09\u2014\u2014\u8BF7\u8BA9\u7528\u6237\uFF1A1) \u786E\u8BA4\u6D4F\u89C8\u5668\u5DF2\u6253\u5F00\u4E14\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\uFF1B2) \u63D2\u4EF6\u8BBE\u7F6E\u9875 \u2192\u300C\u667A\u80FD\u4F53\u63A5\u7BA1\u300D\u2192 \u5F00\u542F\u9876\u90E8\u5F00\u5173\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u91CD\u8BD5\u4E00\u6B21\u3002`
+          message: this.awaitingPairing ? `\u63D2\u4EF6\u5DF2\u68C0\u6D4B\u5230\u672C\u8BBE\u5907\uFF08\u536B\u661F\u6A21\u5F0F\uFF09\uFF0C\u4F46\u5C1A\u672A\u6279\u51C6\u914D\u5BF9\u3002\u8BF7\u8BA9\u7528\u6237\u5728\u63D2\u4EF6\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u4E2D\u6838\u5BF9\u8BBE\u5907\u6307\u7EB9\u5E76\u70B9\u51FB\u6279\u51C6\uFF0C\u7136\u540E\u91CD\u8BD5\u3002\u6307\u7EB9\uFF1A${fingerprint}` : diag ? `\u672A\u8FDE\u63A5\u5230\u63A2\u6817\u63D2\u4EF6\uFF08\u591A\u5BBF\u4E3B\u4E2D\u8F6C\u6A21\u5F0F\uFF09\u3002${diag}\u3002` : `\u672A\u8FDE\u63A5\u5230\u63A2\u6817\u63D2\u4EF6\u3002\u5F53\u524D\u4E3A\u591A\u5BBF\u4E3B\u4E2D\u8F6C\u6A21\u5F0F\uFF08\u7AEF\u53E3\u88AB ${relay?.hostLabel || "\u53E6\u4E00\u5BBF\u4E3B"} \u7684\u9002\u914D\u5668\u5360\u7528\uFF0C\u672C\u8BBE\u5907\u7ECF\u5176\u4E2D\u8F6C\uFF09\u3002${extensionLaunchHint() || "\u8BF7\u8BA9\u7528\u6237\uFF1A1) \u786E\u8BA4\u6D4F\u89C8\u5668\u5DF2\u6253\u5F00\u4E14\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\uFF1B2) \u63D2\u4EF6\u8BBE\u7F6E\u9875 \u2192\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u2192 \u5F00\u542F\u9876\u90E8\u5F00\u5173"}\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u91CD\u8BD5\u4E00\u6B21\u3002`
         }
       });
     }
@@ -4562,7 +4729,7 @@ var AgentBroker = class {
           ok: false,
           error: {
             code: "TASK_TIMEOUT",
-            message: `\u4EFB\u52A1\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)}s\uFF0C\u7ECF\u4E3B Broker \u4E2D\u8F6C\uFF09\u3002\u63D2\u4EF6\u53EF\u80FD\u88AB\u6D4F\u89C8\u5668\u4F11\u7720\u6216\u91C7\u96C6\u4E2D\u65AD\uFF0C\u53EF\u8BA9\u7528\u6237\u6253\u5F00\u4E00\u6B21\u63D2\u4EF6\u9762\u677F\u540E\u91CD\u8BD5\u3002`
+            message: `\u4EFB\u52A1\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)}s\uFF0C\u7ECF\u4E3B Broker \u4E2D\u8F6C\uFF09\u3002\u6CE8\u610F\uFF1A\u63D2\u4EF6\u53EF\u80FD\u4ECD\u5728\u6267\u884C\uFF0C\u4E14\u91C7\u96C6\u6570\u636E\u4F1A\u5148\u843D\u63A2\u6817\u672C\u5730\u5E93\u2014\u2014\u8BF7\u5148\u7528 query_local_data \u67E5\u8BE2\u8BE5\u4EFB\u52A1\u7684 keyword/url \u5BF9\u5E94\u7ED3\u679C\uFF0C\u67E5\u5230\u5C31\u76F4\u63A5\u7528\u3001\u4E0D\u8981\u91CD\u53D1\uFF1B\u786E\u5B9E\u6CA1\u6709\u518D\u91CD\u53D1\u4EFB\u52A1\uFF08\u907F\u514D\u91CD\u590D\u6D88\u8017\u91C7\u96C6\u989D\u5EA6\uFF09\u3002`
           }
         });
       }, timeoutMs);
@@ -4578,10 +4745,17 @@ var AgentBroker = class {
     });
   }
   /** connection_status 快照（驱动宿主 AI 的 onboarding 状态机）；⭐403 token 经济版：welcome 全文仅在 step=3 下发，step 1/2 轮询每轮省约 200 tokens */
+  /** ⭐B7b-P1 存货提示（主/卫星 hint 共用）：插件侧有已完成未领取结果时，引导 AI 先领取再决定重发 */
+  pendingResultsHint() {
+    const list = this.extension.pendingResults || [];
+    if (!list.length) return "";
+    const brief = list.slice(0, 3).map((p) => `${p.mode || "?"}\xB7${p.keyword || p.url || p.taskId}`).join("\u3001");
+    return `\u6CE8\u610F\uFF1A\u6709 ${list.length} \u6761\u5DF2\u5B8C\u6210\u7684\u4EFB\u52A1\u7ED3\u679C\u672A\u88AB\u9886\u53D6\uFF08${brief}${list.length > 3 ? " \u7B49" : ""}\uFF09\u2014\u2014\u8BF7\u5148\u7528 leadsradar_claim_pending_result \u9886\u53D6\uFF08\u4E0D\u5360\u91C7\u96C6\u9650\u989D\uFF09\uFF0C\u9886\u5230\u76F4\u63A5\u7528\uFF1B\u6CA1\u6709\u9700\u8981\u7684\u518D\u8003\u8651\u65B0\u4EFB\u52A1\uFF0C\u907F\u514D\u91CD\u590D\u6D88\u8017\u989D\u5EA6\u3002`;
+  }
   statusSnapshot() {
     const connected = this.relay ? this.relay.extensionConnected : this.extension.connected;
     const awaitingPairing = this.awaitingPairing;
-    const step = connected ? 3 : awaitingPairing ? 2 : 1;
+    const step = this.relay ? !connected ? 1 : this.selfPaired ? 3 : 2 : connected ? 3 : awaitingPairing ? 2 : 1;
     const base = {
       ok: true,
       adapter: {
@@ -4603,7 +4777,13 @@ var AgentBroker = class {
         extensionId: this.extension.extensionId || null,
         extensionVersion: this.extension.extensionVersion || null,
         pendingResultCount: this.extension.pendingResultCount,
+        // ⭐B7b-P1 未领取结果摘要透出：非空=插件侧有已完成结果待 leadsradar_claim_pending_result 领取
+        pendingResults: this.extension.pendingResults || [],
         lastDisconnectedAt: this.lastDisconnect || null,
+        // ⭐1.2.17 B3 断开原因透出：close frame 原文（code+reason）+诊断结论，宿主 AI 可直接读
+        lastDisconnectCode: this.lastClose?.code ?? null,
+        lastDisconnectReason: this.lastClose?.reason || null,
+        disconnectDiagnosis: this.extension.connected ? null : this.disconnectDiagnosis(),
         // ⭐r81 P0-3 登录态透出：save_topic/云端入库等需登录——宿主动手前用 connection_status
         // 预检（wb 实测采完详情才报 CLOUD_ERROR，白消耗采集额度）。注意：握手时点的快照，
         // 中途登录/退出会过期，动作层 LOGIN_REQUIRED 报错是第二道防线
@@ -4618,7 +4798,7 @@ var AgentBroker = class {
           awaitingPairing,
           portBound: false,
           relayMode: true,
-          hint: connected ? `\u5DF2\u8FDE\u63A5\uFF08\u591A\u5BBF\u4E3B\u4E2D\u8F6C\u6A21\u5F0F\uFF1A\u7ECF\u300C${this.relay.hostLabel || this.relay.host}\u300D\u7684\u8FDE\u63A5\u5668\u5171\u4EAB\u63D2\u4EF6\u8FDE\u63A5\uFF0C\u8C46\u5305\u5DE5\u4F5C/WorkBuddy \u53EF\u540C\u65F6\u5728\u7EBF\uFF09\uFF0C\u53EF\u4EE5\u5F00\u59CB\u91C7\u96C6\u4EFB\u52A1\u3002` : awaitingPairing ? `\u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF08\u536B\u661F\u6A21\u5F0F\uFF09\uFF1A\u628A adapter.fingerprint \u539F\u6837\u8F6C\u544A\u7528\u6237\uFF0C\u8BF7\u5176\u5230\u63D2\u4EF6\u8BBE\u7F6E\u9875\u6838\u5BF9\u6307\u7EB9\u4E00\u81F4\u540E\u70B9\u300C\u6279\u51C6\u300D\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002` : `\u4E2D\u8F6C\u6A21\u5F0F\u7B49\u5F85\u63D2\u4EF6\uFF1A\u8BF7\u8BA9\u7528\u6237\u6253\u5F00\u6D4F\u89C8\u5668\u786E\u8BA4\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\u3001\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u63A5\u7BA1\u300D\u5F00\u5173\u5DF2\u6253\u5F00\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002`
+          hint: step === 3 ? `\u5DF2\u8FDE\u63A5\uFF08\u591A\u5BBF\u4E3B\u4E2D\u8F6C\u6A21\u5F0F\uFF1A\u7ECF\u300C${this.relay.hostLabel || this.relay.host}\u300D\u7684\u8FDE\u63A5\u5668\u5171\u4EAB\u63D2\u4EF6\u8FDE\u63A5\uFF0C\u8C46\u5305\u5DE5\u4F5C/WorkBuddy \u53EF\u540C\u65F6\u5728\u7EBF\uFF09\uFF0C\u53EF\u4EE5\u5F00\u59CB\u91C7\u96C6\u4EFB\u52A1\u3002${this.pendingResultsHint()}` : step === 2 ? `\u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF08\u536B\u661F\u6A21\u5F0F\uFF0C\u7ECF\u300C${this.relay.hostLabel || this.relay.host}\u300D\u4E2D\u8F6C\uFF09\uFF1A\u628A adapter.fingerprint \u539F\u6837\u8F6C\u544A\u7528\u6237\uFF0C\u8BF7\u5176\u5230\u63D2\u4EF6\u8BBE\u7F6E\u9875\u786E\u8BA4\u662F\u81EA\u5DF1\u7684\u8BBE\u5907\u540E\u70B9\u300C\u6279\u51C6\u300D\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\uFF08\u6CE8\u610F\uFF1A\u6279\u51C6\u524D\u4EFB\u52A1\u4F1A\u88AB\u62D2\u7EDD\uFF0C\u522B\u6025\u7740\u5F00\u5DE5\uFF09\u3002` : `\u4E2D\u8F6C\u6A21\u5F0F\u7B49\u5F85\u63D2\u4EF6\uFF1A\u8BF7\u8BA9\u7528\u6237\u6253\u5F00\u6D4F\u89C8\u5668\u786E\u8BA4\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\u3001\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u5F00\u5173\u5DF2\u6253\u5F00\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002`
         },
         welcome: step === 3 ? { fixedCopy: WELCOME_FIXED_COPY } : null
       };
@@ -4632,7 +4812,7 @@ var AgentBroker = class {
         // ⭐r85 portBlocked：EADDRINUSE 且占用者探测无应答 → Windows 动态端口保留段圈走端口。
         //   让宿主 AI 直接把根治命令转告用户，而不是一起懵在「连接器连接失败」
         portBlocked: this.portBlocked === true,
-        hint: this.portBlocked ? `\u9002\u914D\u5668\u7AEF\u53E3 ${PORT} \u88AB Windows \u52A8\u6001\u7AEF\u53E3\u4FDD\u7559\uFF08Hyper-V/WSL \u6392\u9664\u6BB5\uFF09\u6321\u4F4F\uFF1Abind \u88AB\u62D2\u4F46\u65E0\u8FDB\u7A0B\u5360\u7528\uFF0C\u901A\u5E38\u51E0\u5341\u5206\u949F\u5185\u81EA\u52A8\u6062\u590D\uFF0C\u9002\u914D\u5668\u5728\u6301\u7EED\u91CD\u8BD5\u3002\u8BF7\u628A\u8FD9\u6761\u6839\u6CBB\u547D\u4EE4\u8F6C\u544A\u7528\u6237\uFF08\u7BA1\u7406\u5458 PowerShell \u8FD0\u884C\u4E00\u6B21\u6C38\u4E45\u751F\u6548\uFF09\uFF1Anet stop winnat ; netsh int ipv4 add excludedportrange protocol=tcp startport=${PORT} numberofports=1 ; net start winnat\uFF08\u8FD0\u884C\u5B8C\u91CD\u542F\u672C\u4F1A\u8BDD\u5373\u8FDE\u4E0A\uFF09\u3002\u8F6C\u544A\u540E\u6BCF 30 \u79D2\u590D\u67E5\u4E00\u6B21\u3002` : !this.portBound ? `\u672C\u9002\u914D\u5668\u7684\u672C\u673A\u7AEF\u53E3 ${PORT} \u6B63\u5728\u88AB\u5360\u7528\u4E14\u5C1A\u672A\u5B8C\u6210\u4E2D\u8F6C\u534F\u5546\uFF08\u6B63\u5728\u81EA\u52A8\u5904\u7406\uFF1A\u540C\u5BBF\u4E3B\u5B64\u513F\u4F1A\u88AB\u63A5\u7BA1\uFF0C\u5F02\u5BBF\u4E3B\u4F1A\u81EA\u52A8\u8F6C\u5165\u4E2D\u8F6C\u5171\u5B58\uFF09\u3002\u8BF7\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\uFF1B\u82E5\u8D85\u8FC7 1 \u5206\u949F\u4ECD\u505C\u7559\u5728\u6B64\u72B6\u6001\uFF0C\u8BF7\u7528\u6237\u5B8C\u5168\u9000\u51FA\u6240\u6709 AI \u52A9\u624B\uFF08\u542B\u6258\u76D8\uFF09\u540E\u91CD\u5F00\u3002` : step === 1 ? "\u63D2\u4EF6\u672A\u8FDE\u63A5\uFF1A\u82E5\u4F60\u6709\u7EC8\u7AEF\u6743\u9650\u53EF\u8FD0\u884C start chrome\uFF08\u6216 start msedge\uFF09\u6253\u5F00\u6D4F\u89C8\u5668\uFF0C\u63D2\u4EF6\u7EA6 5 \u79D2\u5185\u81EA\u52A8\u91CD\u8FDE\uFF1B\u5426\u5219\u8BF7\u7528\u6237\u5728\u6D4F\u89C8\u5668\u6253\u5F00\u63A2\u6817\u63D2\u4EF6 \u2192 \u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u63A5\u7BA1 \u2192 \u6253\u5F00\u9876\u90E8\u5F00\u5173\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002" : step === 2 ? `\u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF1A\u628A adapter.fingerprint \u539F\u6837\u8F6C\u544A\u7528\u6237\uFF0C\u8BF7\u5176\u5230\u63D2\u4EF6\u8BBE\u7F6E\u9875\u6838\u5BF9\u6307\u7EB9\u4E00\u81F4\u540E\u70B9\u300C\u6279\u51C6\u300D\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002\u6CE8\u610F\uFF1A\u82E5 extension.connected \u4E3A false\uFF0C\u8BF4\u660E\u8FD9\u662F\u63D2\u4EF6\u65AD\u5F00\u524D\u7684\u65E7\u72B6\u6001\u2014\u2014\u8BF7\u63D0\u9192\u7528\u6237\u68C0\u67E5\u63D2\u4EF6\u5F00\u5173\u662F\u5426\u6253\u5F00\uFF08\u6216\u91CD\u65B0\u52A0\u8F7D\u63D2\u4EF6\u540E\u91CD\u65B0\u6253\u5F00\uFF09\uFF0C\u63D2\u4EF6\u91CD\u8FDE\u4F1A\u81EA\u52A8\u91CD\u65B0\u63E1\u624B\u3002` : "\u5DF2\u8FDE\u63A5\uFF0C\u53EF\u4EE5\u5F00\u59CB\u91C7\u96C6\u4EFB\u52A1\u3002"
+        hint: this.portBlocked ? `\u9002\u914D\u5668\u7AEF\u53E3 ${PORT} \u88AB Windows \u52A8\u6001\u7AEF\u53E3\u4FDD\u7559\uFF08Hyper-V/WSL \u6392\u9664\u6BB5\uFF09\u6321\u4F4F\uFF1Abind \u88AB\u62D2\u4F46\u65E0\u8FDB\u7A0B\u5360\u7528\uFF0C\u901A\u5E38\u51E0\u5341\u5206\u949F\u5185\u81EA\u52A8\u6062\u590D\uFF0C\u9002\u914D\u5668\u5728\u6301\u7EED\u91CD\u8BD5\u3002\u8BF7\u628A\u8FD9\u6761\u6839\u6CBB\u547D\u4EE4\u8F6C\u544A\u7528\u6237\uFF08\u7BA1\u7406\u5458 PowerShell \u8FD0\u884C\u4E00\u6B21\u6C38\u4E45\u751F\u6548\uFF09\uFF1Anet stop winnat ; netsh int ipv4 add excludedportrange protocol=tcp startport=${PORT} numberofports=1 ; net start winnat\uFF08\u8FD0\u884C\u5B8C\u91CD\u542F\u672C\u4F1A\u8BDD\u5373\u8FDE\u4E0A\uFF09\u3002\u8F6C\u544A\u540E\u6BCF 30 \u79D2\u590D\u67E5\u4E00\u6B21\u3002` : !this.portBound ? `\u672C\u9002\u914D\u5668\u7684\u672C\u673A\u7AEF\u53E3 ${PORT} \u6B63\u5728\u88AB\u5360\u7528\u4E14\u5C1A\u672A\u5B8C\u6210\u4E2D\u8F6C\u534F\u5546\uFF08\u6B63\u5728\u81EA\u52A8\u5904\u7406\uFF1A\u540C\u5BBF\u4E3B\u5B64\u513F\u4F1A\u88AB\u63A5\u7BA1\uFF0C\u5F02\u5BBF\u4E3B\u4F1A\u81EA\u52A8\u8F6C\u5165\u4E2D\u8F6C\u5171\u5B58\uFF09\u3002\u8BF7\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\uFF1B\u82E5\u8D85\u8FC7 1 \u5206\u949F\u4ECD\u505C\u7559\u5728\u6B64\u72B6\u6001\uFF0C\u8BF7\u7528\u6237\u5B8C\u5168\u9000\u51FA\u6240\u6709 AI \u52A9\u624B\uFF08\u542B\u6258\u76D8\uFF09\u540E\u91CD\u5F00\u3002` : step === 1 ? `\u63D2\u4EF6\u672A\u8FDE\u63A5\uFF1A${this.disconnectDiagnosis() || extensionLaunchHint() || "\u82E5\u4F60\u6709\u7EC8\u7AEF\u6743\u9650\u53EF\u8FD0\u884C start chrome\uFF08\u6216 start msedge\uFF09\u6253\u5F00\u6D4F\u89C8\u5668\uFF0C\u63D2\u4EF6\u7EA6 5 \u79D2\u5185\u81EA\u52A8\u91CD\u8FDE"}\uFF1B\u5426\u5219\u8BF7\u7528\u6237\u5728\u6D4F\u89C8\u5668\u6253\u5F00\u63A2\u6817\u63D2\u4EF6 \u2192 \u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u8FDE\u63A5 \u2192 \u6253\u5F00\u9876\u90E8\u5F00\u5173\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002` : step === 2 ? `\u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF1A\u628A adapter.fingerprint \u539F\u6837\u8F6C\u544A\u7528\u6237\uFF0C\u8BF7\u5176\u5230\u63D2\u4EF6\u8BBE\u7F6E\u9875\u6838\u5BF9\u6307\u7EB9\u4E00\u81F4\u540E\u70B9\u300C\u6279\u51C6\u300D\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002\u6CE8\u610F\uFF1A\u82E5 extension.connected \u4E3A false\uFF0C\u8BF4\u660E\u8FD9\u662F\u63D2\u4EF6\u65AD\u5F00\u524D\u7684\u65E7\u72B6\u6001\u2014\u2014\u8BF7\u63D0\u9192\u7528\u6237\u68C0\u67E5\u63D2\u4EF6\u5F00\u5173\u662F\u5426\u6253\u5F00\uFF08\u6216\u91CD\u65B0\u52A0\u8F7D\u63D2\u4EF6\u540E\u91CD\u65B0\u6253\u5F00\uFF09\uFF0C\u63D2\u4EF6\u91CD\u8FDE\u4F1A\u81EA\u52A8\u91CD\u65B0\u63E1\u624B\u3002` : `\u5DF2\u8FDE\u63A5\uFF0C\u53EF\u4EE5\u5F00\u59CB\u91C7\u96C6\u4EFB\u52A1\u3002${this.pendingResultsHint()}`
       },
       // step<3 不下发 welcome（省 token）；step=3 由宿主 AI 原样展示给用户
       welcome: step === 3 ? { fixedCopy: WELCOME_FIXED_COPY } : null
@@ -4640,9 +4820,11 @@ var AgentBroker = class {
   }
 };
 var WELCOME_FIXED_COPY = [
-  "\u2705 \u63A2\u6817\u5DF2\u8FDE\u63A5\uFF01\u4EE5\u540E\u4F60\u4E0D\u7528\u8BB0\u4EFB\u4F55\u547D\u4EE4\u2014\u2014\u8BF4\u300C\u63A2\u6817\u300D\u6216\u300C\u63A2\u4E00\u4E0B\u300D\u518D\u5E26\u4E0A\u4F60\u60F3\u67E5\u7684\uFF0C\u6211\u5C31\u5F00\u5E72\uFF1B\u6216\u8005\u76F4\u63A5\u544A\u8BC9\u6211\u4F60\u5728\u505A\u4EC0\u4E48\u3001\u5361\u5728\u54EA\u91CC\uFF0C\u6211\u4F1A\u81EA\u5DF1\u5224\u65AD\u8BE5\u641C\u5173\u952E\u8BCD\u3001\u770B\u535A\u4E3B\u4E3B\u9875\u3001\u8BFB\u7206\u6B3E\u8BC4\u8BBA\u8FD8\u662F\u62C6\u89E3\u5355\u7BC7\u7B14\u8BB0\uFF0C\u628A\u771F\u5B9E\u6570\u636E\u6574\u7406\u6210\u4F60\u80FD\u76F4\u63A5\u7528\u7684\u83B7\u5BA2\u7EBF\u7D22\u3001\u9009\u9898\u6216\u521D\u7A3F\u3002",
-  "\u73B0\u5728\u5C31\u53EF\u4EE5\u8BD5\u8BD5\uFF1A\n\u300C\u6211\u5728\u505A\u5BB6\u88C5\u83B7\u5BA2\uFF0C\u5E2E\u6211\u770B\u770B\u5C0F\u7EA2\u4E66\u4E0A\u6700\u8FD1\u4EC0\u4E48\u5185\u5BB9\u8BC4\u8BBA\u91CC\u7559\u8D44\u6700\u591A\u300D\n\u300C\u5E2E\u6211\u627E\u4E00\u4E2A\u8D77\u53F7\u5FEB\u7684\u5C0F\u7EA2\u4E66\u8D5B\u9053\uFF0C\u7ED9\u6211 10 \u4E2A\u5BF9\u6807\u8D26\u53F7\u300D\n\u300C\u628A\u8FD9\u7BC7\u7206\u6B3E\u7684\u8BC4\u8BBA\u533A\u6316\u4E00\u904D\uFF0C\u627E\u51FA\u60F3\u8BE2\u4EF7\u7684\u4EBA\u300D"
-].join("\n\n");
+  "\u2705 \u63A2\u6817\u5DF2\u8FDE\u63A5\uFF01\u73B0\u5728\u5C31\u53EF\u4EE5\u8BF4\uFF1A",
+  "\u300C\u6211\u5728\u505A\u5BB6\u88C5\u83B7\u5BA2\uFF0C\u63A2\u4E00\u4E0B\u5C0F\u7EA2\u4E66\u6700\u8FD1\u4EC0\u4E48\u5185\u5BB9\u8BC4\u8BBA\u533A\u7559\u8D44\u6700\u591A\u300D",
+  "\u300C\u63A2\u4E00\u4E0B\u8D77\u53F7\u5FEB\u7684\u5C0F\u7EA2\u4E66\u8D5B\u9053\uFF0C\u7ED9\u6211 10 \u4E2A\u5BF9\u6807\u8D26\u53F7\u300D",
+  "\u300C\u63A2\u4E00\u4E0B\u8FD9\u7BC7\u7206\u6B3E\u7684\u8BC4\u8BBA\u533A\uFF0C\u628A\u60F3\u8BE2\u4EF7\u7684\u4EBA\u90FD\u627E\u51FA\u6765\u300D"
+].join("\n");
 var MCP_INSTRUCTIONS = [
   "\u63A2\u6817\uFF08LeadsRadar\uFF09\u5448\u73B0\u89C4\u8303\u2014\u2014\u5BF9\u6700\u7EC8\u7528\u6237\u8BF4\u8BDD\u65F6\u9075\u5B88\uFF0C\u56DB\u4E2A\u6280\u80FD\u901A\u7528\uFF1A",
   "1. \u65F6\u95F4\u76F8\u5BF9\u5316\uFF1A\u63A5\u53E3\u8FD4\u56DE\u7684 ISO \u65F6\u95F4\u6233\uFF08\u5982 2026-04-16T16:00:00.000Z\uFF09\u4E00\u5F8B\u8F6C\u6210\u4EBA\u8BDD\u2014\u2014\u300C3 \u5929\u524D\u300D\u300C\u4E0A\u5468\u300D\u300C4\u670817\u65E5\u300D\uFF1B\u6570\u636E\u7ED3\u8BBA\u6807\u6CE8\u300C\u622A\u81F3\u91C7\u96C6\u65F6\u300D\uFF0C\u9632\u6B62\u7528\u6237\u5F53\u5B9E\u65F6\u6570\u636E\u3002",
@@ -4660,15 +4842,16 @@ if (!HTTP_MODE && process.stdin && !process.stdin.isTTY) {
   });
 }
 var MAX_LIST_LIMIT = 300;
-function capLimit(value, fallback) {
+var MAX_COMMENT_LIMIT = 500;
+function capLimit(value, fallback, max = MAX_LIST_LIMIT) {
   const n = Math.floor(Number(value));
   if (!Number.isFinite(n) || n <= 0) return fallback;
-  return Math.min(n, MAX_LIST_LIMIT);
+  return Math.min(n, max);
 }
 var TOOLS = [
   {
     name: "leadsradar_connection_status",
-    description: "\u68C0\u67E5\u63A2\u6817\uFF08LeadsRadar\uFF09\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u72B6\u6001\u4E0E\u63A5\u5165\u8FDB\u5EA6\u3002\u5F00\u59CB\u4EFB\u4F55\u91C7\u96C6\u524D\u3001\u4EE5\u53CA\u914D\u5BF9\u7B49\u5F85\u671F\u95F4\u5E94\u8F6E\u8BE2\u672C\u5DE5\u5177\uFF08\u6BCF 8 \u79D2\u4E00\u6B21\uFF0C\u6700\u591A 12 \u6B21\uFF09\uFF1Aonboarding.step=1 \u8868\u793A\u63D2\u4EF6\u672A\u8FDE\u63A5\uFF08\u9700\u7528\u6237\u5F00\u542F\u63D2\u4EF6\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u63A5\u7BA1\u300D\u5F00\u5173\uFF09\uFF1Bstep=2 \u8868\u793A\u7B49\u5F85\u7528\u6237\u5728\u63D2\u4EF6\u4E2D\u6279\u51C6\u914D\u5BF9\uFF1Bstep=3\uFF08extension.connected=true\uFF09\u8868\u793A\u5DF2\u5C31\u7EEA\uFF0C\u53EF\u4EE5\u8C03\u7528\u91C7\u96C6\u5DE5\u5177\u3002extension.account.loggedIn \u4E3A\u767B\u5F55\u6001\uFF08true=\u5DF2\u767B\u5F55/false=\u672A\u767B\u5F55/null=\u672A\u77E5\uFF09\uFF1A\u5B58\u9009\u9898\uFF08save_topic\uFF09\u7B49\u4E91\u7AEF\u5199\u5165\u52A8\u4F5C\u52A8\u624B\u524D\u5FC5\u67E5\u2014\u2014false \u65F6\u5148\u5F15\u5BFC\u7528\u6237\u5728\u63D2\u4EF6\u4E2A\u4EBA\u4E2D\u5FC3\u767B\u5F55\uFF0C\u522B\u5148\u6D88\u8017\u91C7\u96C6\u989D\u5EA6\uFF1BloggedIn=true \u65F6\u987A\u5E26\u53EF\u7528 extension.account.nickname \u79F0\u547C\u7528\u6237\u3002",
+    description: "\u68C0\u67E5\u63A2\u6817\uFF08LeadsRadar\uFF09\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u72B6\u6001\u4E0E\u63A5\u5165\u8FDB\u5EA6\u3002\u5F00\u59CB\u4EFB\u4F55\u91C7\u96C6\u524D\u3001\u4EE5\u53CA\u914D\u5BF9\u7B49\u5F85\u671F\u95F4\u5E94\u8F6E\u8BE2\u672C\u5DE5\u5177\uFF08\u6BCF 8 \u79D2\u4E00\u6B21\uFF0C\u6700\u591A 12 \u6B21\uFF09\uFF1Aonboarding.step=1 \u8868\u793A\u63D2\u4EF6\u672A\u8FDE\u63A5\uFF08\u9700\u7528\u6237\u5F00\u542F\u63D2\u4EF6\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u5F00\u5173\uFF09\uFF1Bstep=2 \u8868\u793A\u7B49\u5F85\u7528\u6237\u5728\u63D2\u4EF6\u4E2D\u6279\u51C6\u914D\u5BF9\uFF1Bstep=3\uFF08extension.connected=true\uFF09\u8868\u793A\u5DF2\u5C31\u7EEA\uFF0C\u53EF\u4EE5\u8C03\u7528\u91C7\u96C6\u5DE5\u5177\u3002extension.account.loggedIn \u4E3A\u767B\u5F55\u6001\uFF08true=\u5DF2\u767B\u5F55/false=\u672A\u767B\u5F55/null=\u672A\u77E5\uFF09\uFF1A\u5B58\u9009\u9898\uFF08save_topic\uFF09\u7B49\u4E91\u7AEF\u5199\u5165\u52A8\u4F5C\u52A8\u624B\u524D\u5FC5\u67E5\u2014\u2014false \u65F6\u5148\u5F15\u5BFC\u7528\u6237\u5728\u63D2\u4EF6\u4E2A\u4EBA\u4E2D\u5FC3\u767B\u5F55\uFF0C\u522B\u5148\u6D88\u8017\u91C7\u96C6\u989D\u5EA6\uFF1BloggedIn=true \u65F6\u987A\u5E26\u53EF\u7528 extension.account.nickname \u79F0\u547C\u7528\u6237\u3002",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
@@ -4767,11 +4950,64 @@ var TOOLS = [
       required: ["source"],
       additionalProperties: false
     }
+  },
+  {
+    name: "leadsradar_claim_pending_result",
+    description: "\u9886\u53D6\u63A2\u6817\u63D2\u4EF6\u4FA7\u5DF2\u5B8C\u6210\u4F46\u672A\u88AB\u8BA4\u9886\u7684\u4EFB\u52A1\u7ED3\u679C\uFF08\u4E0D\u5360\u91C7\u96C6\u9650\u989D\u3001\u79D2\u56DE\uFF09\u3002\u4F55\u65F6\u7528\uFF1A\u2460\u4EFB\u52A1\u8D85\u65F6\u540E\uFF08\u63D2\u4EF6\u53EF\u80FD\u5DF2\u8DD1\u5B8C\uFF0C\u5148\u9886\u518D\u51B3\u5B9A\u662F\u5426\u91CD\u53D1\uFF0C\u907F\u514D\u53CC\u8017\u91C7\u96C6\u989D\u5EA6\uFF09\uFF1B\u2461\u5BBF\u4E3B/\u4F1A\u8BDD\u91CD\u542F\u540E\u56DE\u6765\uFF1B\u2462connection_status \u7684 extension.pendingResults \u5217\u8868\u975E\u7A7A\u65F6\u3002\u9886\u53D6\u7ED3\u679C\u91CC results \u4E3A\u7ED3\u679C\u672C\u4F53\u53EF\u76F4\u63A5\u4F7F\u7528\uFF0Cpending \u4E3A\u5269\u4F59\u672A\u9886\u53D6\u6458\u8981\u3002\u9886\u4E0D\u5230\u518D\u7528 query_local_data \u67E5\u672C\u5730\u5E93\uFF0C\u90FD\u6CA1\u6709\u624D\u8003\u8651\u91CD\u53D1\u4EFB\u52A1\u3002",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "\u53EF\u9009\uFF1A\u8981\u9886\u53D6\u7684 taskId\uFF08\u6765\u81EA connection_status \u7684 extension.pendingResults\uFF09\uFF1B\u4E0D\u4F20=\u9886\u53D6\u5168\u90E8\u672A\u9886\u53D6\u7ED3\u679C" }
+      },
+      additionalProperties: false
+    }
   }
 ];
+var SVC_IPC_PORT = 17374;
+var svcWakeFailed = false;
+function isTcpOpen(port) {
+  return new Promise((resolve) => {
+    const s = createConnection({ port, host: "127.0.0.1" });
+    const done = (ok) => {
+      s.destroy();
+      resolve(ok);
+    };
+    s.setTimeout(600, () => done(false));
+    s.once("connect", () => done(true));
+    s.once("error", () => done(false));
+  });
+}
+async function wakeLocalService() {
+  try {
+    if (process.platform !== "win32" || svcWakeFailed) return;
+    if (await isTcpOpen(SVC_IPC_PORT)) return;
+    const regKeys = [
+      "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.leadsradar.service",
+      "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.leadsradar.service"
+    ];
+    for (const k of regKeys) {
+      try {
+        const { stdout } = await new Promise((res, rej) => execFile("reg", ["query", k, "/ve"], { windowsHide: true }, (e, so) => e ? rej(e) : res({ stdout: so })));
+        const m = stdout.match(/REG_SZ\s+(\S.*com\.leadsradar\.service\.json)/i);
+        if (!m) continue;
+        const conf = JSON.parse(readFileSync(m[1].trim(), "utf8"));
+        const exe = conf && conf.path;
+        if (!exe || !existsSync(exe)) continue;
+        const child = spawn(exe, ["--woken-by-agent"], { detached: true, stdio: "ignore", windowsHide: true });
+        child.unref();
+        log(`[lf-agent] AI \u5524\u9192\uFF1A\u63A2\u6817 MCP \u672A\u8FD0\u884C\uFF0C\u5DF2\u62C9\u8D77 ${exe}`);
+        return;
+      } catch {
+      }
+    }
+    svcWakeFailed = true;
+  } catch {
+  }
+}
 async function callTool(name, args) {
   switch (name) {
     case "leadsradar_connection_status":
+      void wakeLocalService();
       return broker.statusSnapshot();
     case "leadsradar_search_notes": {
       const keyword = String(args.keyword || "").trim();
@@ -4803,7 +5039,7 @@ async function callTool(name, args) {
       return broker.startTask({
         mode: "comments",
         url,
-        limit: capLimit(args.limit, 30),
+        limit: capLimit(args.limit, 30, MAX_COMMENT_LIMIT),
         source: HOST,
         agentContext: { host: HOST }
       });
@@ -4861,6 +5097,18 @@ async function callTool(name, args) {
           platform,
           noteUrl: String(args.note_url || "").trim(),
           limit,
+          source: HOST,
+          agentContext: { host: HOST }
+        },
+        3e4
+      );
+    }
+    case "leadsradar_claim_pending_result": {
+      const claimTaskId = String(args.taskId || "").trim();
+      return broker.startTask(
+        {
+          mode: "claim_pending_result",
+          ...claimTaskId ? { claimTaskId } : { claimAll: true },
           source: HOST,
           agentContext: { host: HOST }
         },
