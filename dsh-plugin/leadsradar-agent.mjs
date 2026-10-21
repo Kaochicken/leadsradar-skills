@@ -4072,7 +4072,6 @@ var AgentBroker = class {
         } catch {
         }
         this.broadcastDevices();
-        // ⭐R56 卫星挂入即推一次当前插件状态（含登录态）——否则插件一直在线无状态变化时，卫星要等到下次断/连才拿得到 account
         this.notifyDownstreamsExtension(this.extension.connected);
         return;
       }
@@ -4205,7 +4204,6 @@ var AgentBroker = class {
               }
             };
             log(`[lf-agent] \u767B\u5F55\u6001\u66F4\u65B0\uFF1A${msg.account.loggedIn === true ? `\u5DF2\u767B\u5F55\uFF08${msg.account.nickname || "?"}\uFF09` : "\u672A\u767B\u5F55"}`);
-            // ⭐R56 登录态变化实时转发卫星（幂等重推 connected/pendingResults 无副作用）
             this.notifyDownstreamsExtension(this.extension.connected);
           }
           return;
@@ -4524,7 +4522,6 @@ var AgentBroker = class {
         if (Array.isArray(msg.pendingResults)) {
           this.extension = { ...this.extension, pendingResults: msg.pendingResults.slice(0, 10), pendingResultCount: msg.pendingResults.length };
         }
-        // ⭐R56 登录态随中转状态到达（对齐 extension.hello 消费范式；旧主 Broker 不带此字段=保留上次值防清丢）
         if (msg.account) {
           this.extension = { ...this.extension, account: { loggedIn: msg.account.loggedIn === true, nickname: String(msg.account.nickname || "") || null } };
         }
