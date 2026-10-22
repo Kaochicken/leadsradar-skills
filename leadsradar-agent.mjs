@@ -3748,8 +3748,10 @@ var SKILLS_LATEST = {
   radar: "1.1.0",
   insights: "2.2.0",
   creator: "1.2.0",
-  closer: "1.2.0",
-  helper: "1.3.0"
+  closer: "1.3.0",
+  // ⭐R78 栗子触达精准触发词查漏
+  helper: "1.3.1"
+  // ⭐R78 触达路由+设置/学习 FAQ
 };
 var ADAPTER_VERSION = "1.2.21";
 var HOST_LABELS = {
