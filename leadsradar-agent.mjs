@@ -3744,7 +3744,14 @@ import { execFile, spawn } from "node:child_process";
 var __dirname = dirname(fileURLToPath(import.meta.url));
 var PORT = Number(process.env.LEADSRADAR_AGENT_PORT) || 17373;
 var PROTOCOL_VERSION = "3";
-var ADAPTER_VERSION = "1.2.20";
+var SKILLS_LATEST = {
+  radar: "1.1.0",
+  insights: "2.2.0",
+  creator: "1.2.0",
+  closer: "1.2.0",
+  helper: "1.3.0"
+};
+var ADAPTER_VERSION = "1.2.21";
 var HOST_LABELS = {
   "doubao-work": "\u8C46\u5305\u5DE5\u4F5C",
   // ⭐r85 字节系多客户端实测（用户已验证豆包客户端支持 stdio 连接器，与豆包工作同源）：
@@ -4769,6 +4776,9 @@ var AgentBroker = class {
         relayMode: Boolean(this.relay),
         relayThrough: this.relay?.hostLabel || this.relay?.host || null
       },
+      // ⭐R76 五技能最新版本表（宿主技能自检用）：宿主 AI 拿自己技能文件 frontmatter 的 version 对照，
+      //   落后就指引用户更新技能——Agent 只能识别+指路，技能安装/更新机制在宿主手里
+      skills_latest: SKILLS_LATEST,
       extension: {
         connected,
         extensionId: this.extension.extensionId || null,
