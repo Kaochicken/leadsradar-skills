@@ -37,13 +37,13 @@ Chrome 探栗插件（数据全部在本机浏览器内采集）
 
 每个技能是一个 `SKILL.md`，装进宿主的技能/指令库即生效：
 
-| 技能 | 一句话 | 状态 |
-|---|---|---|
-| **[情报栗](skills/leadsradar-radar/)** | 发作品/账号/关键词「探一下」——现采现报：客户线索、赛道机会、对标巡逻 | ✅ 可用 |
-| **[洞察栗](skills/leadsradar-insights/)** | 拆解爆款为什么爆、查历史研究报告并解读成人话 | ✅ 可用 |
-| **[创作栗](skills/leadsradar-creator/)** | 发作品说一句话——存选题、下无水印素材、提文案 | ✅ 可用 |
-| **[成交栗](skills/leadsradar-closer/)** | 从评论区挖客户——意向分级、跟进名单、可直接发的回复话术 | ✅ 可用 |
-| **[管家栗](skills/leadsradar-helper/)** | 「栗子在吗」的应答前台——查连接登录、报库存、答教程 | ✅ 可用 |
+| | 技能 | 一句话 | 状态 |
+|---|---|---|---|
+| <img src="assets/chestnut-3.webp" width="44" alt="情报栗" /> | **[情报栗](skills/leadsradar-radar/)** | 发作品/账号/关键词「探一下」——现采现报：客户线索、赛道机会、对标巡逻 | ✅ 可用 |
+| <img src="assets/chestnut-1.webp" width="44" alt="洞察栗" /> | **[洞察栗](skills/leadsradar-insights/)** | 拆解爆款为什么爆、查历史研究报告并解读成人话 | ✅ 可用 |
+| <img src="assets/chestnut-6.webp" width="44" alt="创作栗" /> | **[创作栗](skills/leadsradar-creator/)** | 发作品说一句话——存选题、下无水印素材、提文案 | ✅ 可用 |
+| <img src="assets/chestnut-7.webp" width="44" alt="成交栗" /> | **[成交栗](skills/leadsradar-closer/)** | 从评论区挖客户——意向分级、跟进名单、可直接发的回复话术 | ✅ 可用 |
+| <img src="assets/chestnut-4.webp" width="44" alt="管家栗" /> | **[管家栗](skills/leadsradar-helper/)** | 「栗子在吗」的应答前台——查连接登录、报库存、答教程 | ✅ 可用 |
 
 状态说明：五技能全量可用（⭐R53 四大数字员工重组：随手调研+对标巡逻合并为情报栗、数据问答升级洞察栗、素材管家更名创作栗、成交栗/管家栗新建）——洞察栗支持查本地缓存的四类 AI 研究报告（作品拆解/账号研究/赛道研究/账号复盘，附 web 直达链接）；监控/档案/日报类查询通道开发中，上线后技能自动点亮。
 

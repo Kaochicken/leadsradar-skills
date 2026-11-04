@@ -32,13 +32,13 @@ Your phone (lead report / patrol digest / topic card)
 
 Each skill is a `SKILL.md` you drop into your host's skill/instruction library:
 
-| Skill | One-liner | Status |
-|---|---|---|
-| **[Radar · Intel Chestnut](skills/leadsradar-radar/)** | Send a link / keyword + "tan yi xia" — instant lead reports, niche opportunities & benchmark patrol | ✅ |
-| **[Insights Chestnut](skills/leadsradar-insights/)** | Break down why a post went viral; look up & translate past research reports | ✅ |
-| **[Creator Chestnut](skills/leadsradar-creator/)** | Send a post link + one sentence — save topic, download media, extract copy | ✅ |
-| **[Closer Chestnut](skills/leadsradar-closer/)** | Mine customers from comments — intent grading, follow-up lists, ready-to-send replies | ✅ |
-| **[Helper Chestnut](skills/leadsradar-helper/)** | Front desk for the "Lizi" wake word — check connection/login, report inventory, answer FAQs | ✅ |
+| | Skill | One-liner | Status |
+|---|---|---|---|
+| <img src="assets/chestnut-3.webp" width="44" alt="Radar" /> | **[Radar · Intel Chestnut](skills/leadsradar-radar/)** | Send a link / keyword + "tan yi xia" — instant lead reports, niche opportunities & benchmark patrol | ✅ |
+| <img src="assets/chestnut-1.webp" width="44" alt="Insights" /> | **[Insights Chestnut](skills/leadsradar-insights/)** | Break down why a post went viral; look up & translate past research reports | ✅ |
+| <img src="assets/chestnut-6.webp" width="44" alt="Creator" /> | **[Creator Chestnut](skills/leadsradar-creator/)** | Send a post link + one sentence — save topic, download media, extract copy | ✅ |
+| <img src="assets/chestnut-7.webp" width="44" alt="Closer" /> | **[Closer Chestnut](skills/leadsradar-closer/)** | Mine customers from comments — intent grading, follow-up lists, ready-to-send replies | ✅ |
+| <img src="assets/chestnut-4.webp" width="44" alt="Helper" /> | **[Helper Chestnut](skills/leadsradar-helper/)** | Front desk for the "Lizi" wake word — check connection/login, report inventory, answer FAQs | ✅ |
 
 **Wake words**: address your AI with **"Lizi"（栗子）** (e.g. "栗子，存一下这个选题 / Lizi, save this topic") or start with **"探一下 / tan yi xia"** (e.g. "探一下：家装获客这个词还有机会吗") to invoke the skills — "探栗 / LeadsRadar" also works; clear intent triggers them even without a wake word.
 

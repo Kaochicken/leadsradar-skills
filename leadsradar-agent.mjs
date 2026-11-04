@@ -1,3739 +1,35 @@
 #!/usr/bin/env node
-import { createRequire as __createRequire } from 'node:module';
-const require = __createRequire(import.meta.url);
-var __create = Object.create;
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __getProtoOf = Object.getPrototypeOf;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
-  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
-}) : x)(function(x) {
-  if (typeof require !== "undefined") return require.apply(this, arguments);
-  throw Error('Dynamic require of "' + x + '" is not supported');
-});
-var __commonJS = (cb, mod) => function __require2() {
-  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
-};
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
-  // If the importer is in node compatibility mode or this is not an ESM
-  // file that has been converted to a CommonJS file using a Babel-
-  // compatible transform (i.e. "__esModule" has not been set), then set
-  // "default" to the CommonJS "module.exports" for node compatibility.
-  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
-  mod
-));
+/**
+ * 探栗（LeadsRadar）Agent 适配器（豆包工作 / WorkBuddy / Codex / Claude 通用）
+ *
+ * 形态：STDIO MCP server + 内嵌本机 Broker，二者同进程：
+ *   - 宿主（豆包工作连接器 / WorkBuddy MCP 服务管理 / Codex 插件）以 STDIO 启动本文件
+ *   - 进程内 Broker 监听 ws://127.0.0.1:17373/extension，等插件连入
+ *   - AI 调 MCP 工具 → Broker 下发 task.start → 插件采集 → task.result 回传 → 结果回给 AI
+ *
+ * 协议 1:1 对齐插件 extension/src/lib/local-agent/*（复刻 MediaClaw v0.3）：
+ *   broker.hello → session.challenge → session.proof（Ed25519）→
+ *   （新设备）pairing.awaiting_approval → 用户批准 → session 重握手 → extension.hello
+ *   → task.start / task.progress / task.result（大结果 start/chunk/end 分块）
+ *
+ * 依赖：ws（monorepo 根 node_modules 已装；独立分发时随包附带 package.json）
+ * 环境变量（⭐402 品牌统一 LeadsFind→LeadsRadar）：
+ *   LEADSRADAR_AGENT_HOST        宿主标识（doubao-work | workbuddy | codex | claude）
+ *   LEADSRADAR_AGENT_DEVICE_NAME 设备显示名（配对页展示）
+ *   LEADSRADAR_AGENT_CHANNEL     渠道（local）
+ *   LEADSRADAR_AGENT_NODE        Node 可执行文件绝对路径（启动器透传，仅诊断展示）
+ *
+ * 日志一律走 stderr（stdout 专用于 MCP JSON-RPC，严禁污染）。
+ */
 
-// node_modules/ws/lib/constants.js
-var require_constants = __commonJS({
-  "node_modules/ws/lib/constants.js"(exports, module) {
-    "use strict";
-    var BINARY_TYPES = ["nodebuffer", "arraybuffer", "fragments"];
-    var hasBlob = typeof Blob !== "undefined";
-    if (hasBlob) BINARY_TYPES.push("blob");
-    module.exports = {
-      BINARY_TYPES,
-      CLOSE_TIMEOUT: 3e4,
-      EMPTY_BUFFER: Buffer.alloc(0),
-      GUID: "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
-      hasBlob,
-      kForOnEventAttribute: Symbol("kIsForOnEventAttribute"),
-      kListener: Symbol("kListener"),
-      kStatusCode: Symbol("status-code"),
-      kWebSocket: Symbol("websocket"),
-      NOOP: () => {
-      }
-    };
-  }
-});
-
-// node_modules/ws/lib/buffer-util.js
-var require_buffer_util = __commonJS({
-  "node_modules/ws/lib/buffer-util.js"(exports, module) {
-    "use strict";
-    var { EMPTY_BUFFER } = require_constants();
-    var FastBuffer = Buffer[Symbol.species];
-    function concat(list, totalLength) {
-      if (list.length === 0) return EMPTY_BUFFER;
-      if (list.length === 1) return list[0];
-      const target = Buffer.allocUnsafe(totalLength);
-      let offset = 0;
-      for (let i = 0; i < list.length; i++) {
-        const buf = list[i];
-        target.set(buf, offset);
-        offset += buf.length;
-      }
-      if (offset < totalLength) {
-        return new FastBuffer(target.buffer, target.byteOffset, offset);
-      }
-      return target;
-    }
-    function _mask(source, mask, output, offset, length) {
-      for (let i = 0; i < length; i++) {
-        output[offset + i] = source[i] ^ mask[i & 3];
-      }
-    }
-    function _unmask(buffer, mask) {
-      for (let i = 0; i < buffer.length; i++) {
-        buffer[i] ^= mask[i & 3];
-      }
-    }
-    function toArrayBuffer(buf) {
-      if (buf.length === buf.buffer.byteLength) {
-        return buf.buffer;
-      }
-      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length);
-    }
-    function toBuffer(data) {
-      toBuffer.readOnly = true;
-      if (Buffer.isBuffer(data)) return data;
-      let buf;
-      if (data instanceof ArrayBuffer) {
-        buf = new FastBuffer(data);
-      } else if (ArrayBuffer.isView(data)) {
-        buf = new FastBuffer(data.buffer, data.byteOffset, data.byteLength);
-      } else {
-        buf = Buffer.from(data);
-        toBuffer.readOnly = false;
-      }
-      return buf;
-    }
-    module.exports = {
-      concat,
-      mask: _mask,
-      toArrayBuffer,
-      toBuffer,
-      unmask: _unmask
-    };
-    if (!process.env.WS_NO_BUFFER_UTIL) {
-      try {
-        const bufferUtil = __require("bufferutil");
-        module.exports.mask = function(source, mask, output, offset, length) {
-          if (length < 48) _mask(source, mask, output, offset, length);
-          else bufferUtil.mask(source, mask, output, offset, length);
-        };
-        module.exports.unmask = function(buffer, mask) {
-          if (buffer.length < 32) _unmask(buffer, mask);
-          else bufferUtil.unmask(buffer, mask);
-        };
-      } catch (e) {
-      }
-    }
-  }
-});
-
-// node_modules/ws/lib/limiter.js
-var require_limiter = __commonJS({
-  "node_modules/ws/lib/limiter.js"(exports, module) {
-    "use strict";
-    var kDone = Symbol("kDone");
-    var kRun = Symbol("kRun");
-    var Limiter = class {
-      /**
-       * Creates a new `Limiter`.
-       *
-       * @param {Number} [concurrency=Infinity] The maximum number of jobs allowed
-       *     to run concurrently
-       */
-      constructor(concurrency) {
-        this[kDone] = () => {
-          this.pending--;
-          this[kRun]();
-        };
-        this.concurrency = concurrency || Infinity;
-        this.jobs = [];
-        this.pending = 0;
-      }
-      /**
-       * Adds a job to the queue.
-       *
-       * @param {Function} job The job to run
-       * @public
-       */
-      add(job) {
-        this.jobs.push(job);
-        this[kRun]();
-      }
-      /**
-       * Removes a job from the queue and runs it if possible.
-       *
-       * @private
-       */
-      [kRun]() {
-        if (this.pending === this.concurrency) return;
-        if (this.jobs.length) {
-          const job = this.jobs.shift();
-          this.pending++;
-          job(this[kDone]);
-        }
-      }
-    };
-    module.exports = Limiter;
-  }
-});
-
-// node_modules/ws/lib/permessage-deflate.js
-var require_permessage_deflate = __commonJS({
-  "node_modules/ws/lib/permessage-deflate.js"(exports, module) {
-    "use strict";
-    var zlib = __require("zlib");
-    var bufferUtil = require_buffer_util();
-    var Limiter = require_limiter();
-    var { kStatusCode } = require_constants();
-    var FastBuffer = Buffer[Symbol.species];
-    var TRAILER = Buffer.from([0, 0, 255, 255]);
-    var kPerMessageDeflate = Symbol("permessage-deflate");
-    var kTotalLength = Symbol("total-length");
-    var kCallback = Symbol("callback");
-    var kBuffers = Symbol("buffers");
-    var kError = Symbol("error");
-    var zlibLimiter;
-    var PerMessageDeflate2 = class {
-      /**
-       * Creates a PerMessageDeflate instance.
-       *
-       * @param {Object} [options] Configuration options
-       * @param {(Boolean|Number)} [options.clientMaxWindowBits] Advertise support
-       *     for, or request, a custom client window size
-       * @param {Boolean} [options.clientNoContextTakeover=false] Advertise/
-       *     acknowledge disabling of client context takeover
-       * @param {Number} [options.concurrencyLimit=10] The number of concurrent
-       *     calls to zlib
-       * @param {Boolean} [options.isServer=false] Create the instance in either
-       *     server or client mode
-       * @param {Number} [options.maxPayload=0] The maximum allowed message length
-       * @param {(Boolean|Number)} [options.serverMaxWindowBits] Request/confirm the
-       *     use of a custom server window size
-       * @param {Boolean} [options.serverNoContextTakeover=false] Request/accept
-       *     disabling of server context takeover
-       * @param {Number} [options.threshold=1024] Size (in bytes) below which
-       *     messages should not be compressed if context takeover is disabled
-       * @param {Object} [options.zlibDeflateOptions] Options to pass to zlib on
-       *     deflate
-       * @param {Object} [options.zlibInflateOptions] Options to pass to zlib on
-       *     inflate
-       */
-      constructor(options) {
-        this._options = options || {};
-        this._threshold = this._options.threshold !== void 0 ? this._options.threshold : 1024;
-        this._maxPayload = this._options.maxPayload | 0;
-        this._isServer = !!this._options.isServer;
-        this._deflate = null;
-        this._inflate = null;
-        this.params = null;
-        if (!zlibLimiter) {
-          const concurrency = this._options.concurrencyLimit !== void 0 ? this._options.concurrencyLimit : 10;
-          zlibLimiter = new Limiter(concurrency);
-        }
-      }
-      /**
-       * @type {String}
-       */
-      static get extensionName() {
-        return "permessage-deflate";
-      }
-      /**
-       * Create an extension negotiation offer.
-       *
-       * @return {Object} Extension parameters
-       * @public
-       */
-      offer() {
-        const params = {};
-        if (this._options.serverNoContextTakeover) {
-          params.server_no_context_takeover = true;
-        }
-        if (this._options.clientNoContextTakeover) {
-          params.client_no_context_takeover = true;
-        }
-        if (this._options.serverMaxWindowBits) {
-          params.server_max_window_bits = this._options.serverMaxWindowBits;
-        }
-        if (this._options.clientMaxWindowBits) {
-          params.client_max_window_bits = this._options.clientMaxWindowBits;
-        } else if (this._options.clientMaxWindowBits == null) {
-          params.client_max_window_bits = true;
-        }
-        return params;
-      }
-      /**
-       * Accept an extension negotiation offer/response.
-       *
-       * @param {Array} configurations The extension negotiation offers/reponse
-       * @return {Object} Accepted configuration
-       * @public
-       */
-      accept(configurations) {
-        configurations = this.normalizeParams(configurations);
-        this.params = this._isServer ? this.acceptAsServer(configurations) : this.acceptAsClient(configurations);
-        return this.params;
-      }
-      /**
-       * Releases all resources used by the extension.
-       *
-       * @public
-       */
-      cleanup() {
-        if (this._inflate) {
-          this._inflate.close();
-          this._inflate = null;
-        }
-        if (this._deflate) {
-          const callback = this._deflate[kCallback];
-          this._deflate.close();
-          this._deflate = null;
-          if (callback) {
-            callback(
-              new Error(
-                "The deflate stream was closed while data was being processed"
-              )
-            );
-          }
-        }
-      }
-      /**
-       *  Accept an extension negotiation offer.
-       *
-       * @param {Array} offers The extension negotiation offers
-       * @return {Object} Accepted configuration
-       * @private
-       */
-      acceptAsServer(offers) {
-        const opts = this._options;
-        const accepted = offers.find((params) => {
-          if (opts.serverNoContextTakeover === false && params.server_no_context_takeover || params.server_max_window_bits && (opts.serverMaxWindowBits === false || typeof opts.serverMaxWindowBits === "number" && opts.serverMaxWindowBits > params.server_max_window_bits) || typeof opts.clientMaxWindowBits === "number" && (typeof params.client_max_window_bits === "number" ? opts.clientMaxWindowBits > params.client_max_window_bits : !params.client_max_window_bits)) {
-            return false;
-          }
-          return true;
-        });
-        if (!accepted) {
-          throw new Error("None of the extension offers can be accepted");
-        }
-        if (opts.serverNoContextTakeover) {
-          accepted.server_no_context_takeover = true;
-        }
-        if (opts.clientNoContextTakeover) {
-          accepted.client_no_context_takeover = true;
-        }
-        if (typeof opts.serverMaxWindowBits === "number") {
-          accepted.server_max_window_bits = opts.serverMaxWindowBits;
-        }
-        if (typeof opts.clientMaxWindowBits === "number") {
-          accepted.client_max_window_bits = opts.clientMaxWindowBits;
-        } else if (accepted.client_max_window_bits === true || opts.clientMaxWindowBits === false) {
-          delete accepted.client_max_window_bits;
-        }
-        return accepted;
-      }
-      /**
-       * Accept the extension negotiation response.
-       *
-       * @param {Array} response The extension negotiation response
-       * @return {Object} Accepted configuration
-       * @private
-       */
-      acceptAsClient(response) {
-        const params = response[0];
-        if (this._options.clientNoContextTakeover === false && params.client_no_context_takeover) {
-          throw new Error('Unexpected parameter "client_no_context_takeover"');
-        }
-        if (!params.client_max_window_bits) {
-          if (typeof this._options.clientMaxWindowBits === "number") {
-            params.client_max_window_bits = this._options.clientMaxWindowBits;
-          }
-        } else if (this._options.clientMaxWindowBits === false || typeof this._options.clientMaxWindowBits === "number" && params.client_max_window_bits > this._options.clientMaxWindowBits) {
-          throw new Error(
-            'Unexpected or invalid parameter "client_max_window_bits"'
-          );
-        }
-        return params;
-      }
-      /**
-       * Normalize parameters.
-       *
-       * @param {Array} configurations The extension negotiation offers/reponse
-       * @return {Array} The offers/response with normalized parameters
-       * @private
-       */
-      normalizeParams(configurations) {
-        configurations.forEach((params) => {
-          Object.keys(params).forEach((key) => {
-            let value = params[key];
-            if (value.length > 1) {
-              throw new Error(`Parameter "${key}" must have only a single value`);
-            }
-            value = value[0];
-            if (key === "client_max_window_bits") {
-              if (value !== true) {
-                const num = +value;
-                if (!Number.isInteger(num) || num < 8 || num > 15) {
-                  throw new TypeError(
-                    `Invalid value for parameter "${key}": ${value}`
-                  );
-                }
-                value = num;
-              } else if (!this._isServer) {
-                throw new TypeError(
-                  `Invalid value for parameter "${key}": ${value}`
-                );
-              }
-            } else if (key === "server_max_window_bits") {
-              const num = +value;
-              if (!Number.isInteger(num) || num < 8 || num > 15) {
-                throw new TypeError(
-                  `Invalid value for parameter "${key}": ${value}`
-                );
-              }
-              value = num;
-            } else if (key === "client_no_context_takeover" || key === "server_no_context_takeover") {
-              if (value !== true) {
-                throw new TypeError(
-                  `Invalid value for parameter "${key}": ${value}`
-                );
-              }
-            } else {
-              throw new Error(`Unknown parameter "${key}"`);
-            }
-            params[key] = value;
-          });
-        });
-        return configurations;
-      }
-      /**
-       * Decompress data. Concurrency limited.
-       *
-       * @param {Buffer} data Compressed data
-       * @param {Boolean} fin Specifies whether or not this is the last fragment
-       * @param {Function} callback Callback
-       * @public
-       */
-      decompress(data, fin, callback) {
-        zlibLimiter.add((done) => {
-          this._decompress(data, fin, (err, result) => {
-            done();
-            callback(err, result);
-          });
-        });
-      }
-      /**
-       * Compress data. Concurrency limited.
-       *
-       * @param {(Buffer|String)} data Data to compress
-       * @param {Boolean} fin Specifies whether or not this is the last fragment
-       * @param {Function} callback Callback
-       * @public
-       */
-      compress(data, fin, callback) {
-        zlibLimiter.add((done) => {
-          this._compress(data, fin, (err, result) => {
-            done();
-            callback(err, result);
-          });
-        });
-      }
-      /**
-       * Decompress data.
-       *
-       * @param {Buffer} data Compressed data
-       * @param {Boolean} fin Specifies whether or not this is the last fragment
-       * @param {Function} callback Callback
-       * @private
-       */
-      _decompress(data, fin, callback) {
-        const endpoint = this._isServer ? "client" : "server";
-        if (!this._inflate) {
-          const key = `${endpoint}_max_window_bits`;
-          const windowBits = typeof this.params[key] !== "number" ? zlib.Z_DEFAULT_WINDOWBITS : this.params[key];
-          this._inflate = zlib.createInflateRaw({
-            ...this._options.zlibInflateOptions,
-            windowBits
-          });
-          this._inflate[kPerMessageDeflate] = this;
-          this._inflate[kTotalLength] = 0;
-          this._inflate[kBuffers] = [];
-          this._inflate.on("error", inflateOnError);
-          this._inflate.on("data", inflateOnData);
-        }
-        this._inflate[kCallback] = callback;
-        this._inflate.write(data);
-        if (fin) this._inflate.write(TRAILER);
-        this._inflate.flush(() => {
-          const err = this._inflate[kError];
-          if (err) {
-            this._inflate.close();
-            this._inflate = null;
-            callback(err);
-            return;
-          }
-          const data2 = bufferUtil.concat(
-            this._inflate[kBuffers],
-            this._inflate[kTotalLength]
-          );
-          if (this._inflate._readableState.endEmitted) {
-            this._inflate.close();
-            this._inflate = null;
-          } else {
-            this._inflate[kTotalLength] = 0;
-            this._inflate[kBuffers] = [];
-            if (fin && this.params[`${endpoint}_no_context_takeover`]) {
-              this._inflate.reset();
-            }
-          }
-          callback(null, data2);
-        });
-      }
-      /**
-       * Compress data.
-       *
-       * @param {(Buffer|String)} data Data to compress
-       * @param {Boolean} fin Specifies whether or not this is the last fragment
-       * @param {Function} callback Callback
-       * @private
-       */
-      _compress(data, fin, callback) {
-        const endpoint = this._isServer ? "server" : "client";
-        if (!this._deflate) {
-          const key = `${endpoint}_max_window_bits`;
-          const windowBits = typeof this.params[key] !== "number" ? zlib.Z_DEFAULT_WINDOWBITS : this.params[key];
-          this._deflate = zlib.createDeflateRaw({
-            ...this._options.zlibDeflateOptions,
-            windowBits
-          });
-          this._deflate[kTotalLength] = 0;
-          this._deflate[kBuffers] = [];
-          this._deflate.on("data", deflateOnData);
-        }
-        this._deflate[kCallback] = callback;
-        this._deflate.write(data);
-        this._deflate.flush(zlib.Z_SYNC_FLUSH, () => {
-          if (!this._deflate) {
-            return;
-          }
-          let data2 = bufferUtil.concat(
-            this._deflate[kBuffers],
-            this._deflate[kTotalLength]
-          );
-          if (fin) {
-            data2 = new FastBuffer(data2.buffer, data2.byteOffset, data2.length - 4);
-          }
-          this._deflate[kCallback] = null;
-          this._deflate[kTotalLength] = 0;
-          this._deflate[kBuffers] = [];
-          if (fin && this.params[`${endpoint}_no_context_takeover`]) {
-            this._deflate.reset();
-          }
-          callback(null, data2);
-        });
-      }
-    };
-    module.exports = PerMessageDeflate2;
-    function deflateOnData(chunk) {
-      this[kBuffers].push(chunk);
-      this[kTotalLength] += chunk.length;
-    }
-    function inflateOnData(chunk) {
-      this[kTotalLength] += chunk.length;
-      if (this[kPerMessageDeflate]._maxPayload < 1 || this[kTotalLength] <= this[kPerMessageDeflate]._maxPayload) {
-        this[kBuffers].push(chunk);
-        return;
-      }
-      this[kError] = new RangeError("Max payload size exceeded");
-      this[kError].code = "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH";
-      this[kError][kStatusCode] = 1009;
-      this.removeListener("data", inflateOnData);
-      this.reset();
-    }
-    function inflateOnError(err) {
-      this[kPerMessageDeflate]._inflate = null;
-      if (this[kError]) {
-        this[kCallback](this[kError]);
-        return;
-      }
-      err[kStatusCode] = 1007;
-      this[kCallback](err);
-    }
-  }
-});
-
-// node_modules/ws/lib/validation.js
-var require_validation = __commonJS({
-  "node_modules/ws/lib/validation.js"(exports, module) {
-    "use strict";
-    var { isUtf8 } = __require("buffer");
-    var { hasBlob } = require_constants();
-    var tokenChars = [
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      // 0 - 15
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      // 16 - 31
-      0,
-      1,
-      0,
-      1,
-      1,
-      1,
-      1,
-      1,
-      0,
-      0,
-      1,
-      1,
-      0,
-      1,
-      1,
-      0,
-      // 32 - 47
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      // 48 - 63
-      0,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      // 64 - 79
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      0,
-      0,
-      0,
-      1,
-      1,
-      // 80 - 95
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      // 96 - 111
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      0,
-      1,
-      0,
-      1,
-      0
-      // 112 - 127
-    ];
-    function isValidStatusCode(code) {
-      return code >= 1e3 && code <= 1014 && code !== 1004 && code !== 1005 && code !== 1006 || code >= 3e3 && code <= 4999;
-    }
-    function _isValidUTF8(buf) {
-      const len = buf.length;
-      let i = 0;
-      while (i < len) {
-        if ((buf[i] & 128) === 0) {
-          i++;
-        } else if ((buf[i] & 224) === 192) {
-          if (i + 1 === len || (buf[i + 1] & 192) !== 128 || (buf[i] & 254) === 192) {
-            return false;
-          }
-          i += 2;
-        } else if ((buf[i] & 240) === 224) {
-          if (i + 2 >= len || (buf[i + 1] & 192) !== 128 || (buf[i + 2] & 192) !== 128 || buf[i] === 224 && (buf[i + 1] & 224) === 128 || // Overlong
-          buf[i] === 237 && (buf[i + 1] & 224) === 160) {
-            return false;
-          }
-          i += 3;
-        } else if ((buf[i] & 248) === 240) {
-          if (i + 3 >= len || (buf[i + 1] & 192) !== 128 || (buf[i + 2] & 192) !== 128 || (buf[i + 3] & 192) !== 128 || buf[i] === 240 && (buf[i + 1] & 240) === 128 || // Overlong
-          buf[i] === 244 && buf[i + 1] > 143 || buf[i] > 244) {
-            return false;
-          }
-          i += 4;
-        } else {
-          return false;
-        }
-      }
-      return true;
-    }
-    function isBlob(value) {
-      return hasBlob && typeof value === "object" && typeof value.arrayBuffer === "function" && typeof value.type === "string" && typeof value.stream === "function" && (value[Symbol.toStringTag] === "Blob" || value[Symbol.toStringTag] === "File");
-    }
-    module.exports = {
-      isBlob,
-      isValidStatusCode,
-      isValidUTF8: _isValidUTF8,
-      tokenChars
-    };
-    if (isUtf8) {
-      module.exports.isValidUTF8 = function(buf) {
-        return buf.length < 24 ? _isValidUTF8(buf) : isUtf8(buf);
-      };
-    } else if (!process.env.WS_NO_UTF_8_VALIDATE) {
-      try {
-        const isValidUTF8 = __require("utf-8-validate");
-        module.exports.isValidUTF8 = function(buf) {
-          return buf.length < 32 ? _isValidUTF8(buf) : isValidUTF8(buf);
-        };
-      } catch (e) {
-      }
-    }
-  }
-});
-
-// node_modules/ws/lib/receiver.js
-var require_receiver = __commonJS({
-  "node_modules/ws/lib/receiver.js"(exports, module) {
-    "use strict";
-    var { Writable } = __require("stream");
-    var PerMessageDeflate2 = require_permessage_deflate();
-    var {
-      BINARY_TYPES,
-      EMPTY_BUFFER,
-      kStatusCode,
-      kWebSocket
-    } = require_constants();
-    var { concat, toArrayBuffer, unmask } = require_buffer_util();
-    var { isValidStatusCode, isValidUTF8 } = require_validation();
-    var FastBuffer = Buffer[Symbol.species];
-    var GET_INFO = 0;
-    var GET_PAYLOAD_LENGTH_16 = 1;
-    var GET_PAYLOAD_LENGTH_64 = 2;
-    var GET_MASK = 3;
-    var GET_DATA = 4;
-    var INFLATING = 5;
-    var DEFER_EVENT = 6;
-    var Receiver2 = class extends Writable {
-      /**
-       * Creates a Receiver instance.
-       *
-       * @param {Object} [options] Options object
-       * @param {Boolean} [options.allowSynchronousEvents=true] Specifies whether
-       *     any of the `'message'`, `'ping'`, and `'pong'` events can be emitted
-       *     multiple times in the same tick
-       * @param {String} [options.binaryType=nodebuffer] The type for binary data
-       * @param {Object} [options.extensions] An object containing the negotiated
-       *     extensions
-       * @param {Boolean} [options.isServer=false] Specifies whether to operate in
-       *     client or server mode
-       * @param {Number} [options.maxBufferedChunks=0] The maximum number of
-       *     buffered data chunks
-       * @param {Number} [options.maxFragments=0] The maximum number of message
-       *     fragments
-       * @param {Number} [options.maxPayload=0] The maximum allowed message length
-       * @param {Boolean} [options.skipUTF8Validation=false] Specifies whether or
-       *     not to skip UTF-8 validation for text and close messages
-       */
-      constructor(options = {}) {
-        super();
-        this._allowSynchronousEvents = options.allowSynchronousEvents !== void 0 ? options.allowSynchronousEvents : true;
-        this._binaryType = options.binaryType || BINARY_TYPES[0];
-        this._extensions = options.extensions || {};
-        this._isServer = !!options.isServer;
-        this._maxBufferedChunks = options.maxBufferedChunks | 0;
-        this._maxFragments = options.maxFragments | 0;
-        this._maxPayload = options.maxPayload | 0;
-        this._skipUTF8Validation = !!options.skipUTF8Validation;
-        this[kWebSocket] = void 0;
-        this._bufferedBytes = 0;
-        this._buffers = [];
-        this._compressed = false;
-        this._payloadLength = 0;
-        this._mask = void 0;
-        this._fragmented = 0;
-        this._masked = false;
-        this._fin = false;
-        this._opcode = 0;
-        this._totalPayloadLength = 0;
-        this._messageLength = 0;
-        this._numFragments = 0;
-        this._fragments = [];
-        this._errored = false;
-        this._loop = false;
-        this._state = GET_INFO;
-      }
-      /**
-       * Implements `Writable.prototype._write()`.
-       *
-       * @param {Buffer} chunk The chunk of data to write
-       * @param {String} encoding The character encoding of `chunk`
-       * @param {Function} cb Callback
-       * @private
-       */
-      _write(chunk, encoding, cb) {
-        if (this._opcode === 8 && this._state == GET_INFO) return cb();
-        if (this._maxBufferedChunks > 0 && this._buffers.length >= this._maxBufferedChunks) {
-          cb(
-            this.createError(
-              RangeError,
-              "Too many buffered chunks",
-              false,
-              1008,
-              "WS_ERR_TOO_MANY_BUFFERED_PARTS"
-            )
-          );
-          return;
-        }
-        this._bufferedBytes += chunk.length;
-        this._buffers.push(chunk);
-        this.startLoop(cb);
-      }
-      /**
-       * Consumes `n` bytes from the buffered data.
-       *
-       * @param {Number} n The number of bytes to consume
-       * @return {Buffer} The consumed bytes
-       * @private
-       */
-      consume(n) {
-        this._bufferedBytes -= n;
-        if (n === this._buffers[0].length) return this._buffers.shift();
-        if (n < this._buffers[0].length) {
-          const buf = this._buffers[0];
-          this._buffers[0] = new FastBuffer(
-            buf.buffer,
-            buf.byteOffset + n,
-            buf.length - n
-          );
-          return new FastBuffer(buf.buffer, buf.byteOffset, n);
-        }
-        const dst = Buffer.allocUnsafe(n);
-        do {
-          const buf = this._buffers[0];
-          const offset = dst.length - n;
-          if (n >= buf.length) {
-            dst.set(this._buffers.shift(), offset);
-          } else {
-            dst.set(new Uint8Array(buf.buffer, buf.byteOffset, n), offset);
-            this._buffers[0] = new FastBuffer(
-              buf.buffer,
-              buf.byteOffset + n,
-              buf.length - n
-            );
-          }
-          n -= buf.length;
-        } while (n > 0);
-        return dst;
-      }
-      /**
-       * Starts the parsing loop.
-       *
-       * @param {Function} cb Callback
-       * @private
-       */
-      startLoop(cb) {
-        this._loop = true;
-        do {
-          switch (this._state) {
-            case GET_INFO:
-              this.getInfo(cb);
-              break;
-            case GET_PAYLOAD_LENGTH_16:
-              this.getPayloadLength16(cb);
-              break;
-            case GET_PAYLOAD_LENGTH_64:
-              this.getPayloadLength64(cb);
-              break;
-            case GET_MASK:
-              this.getMask();
-              break;
-            case GET_DATA:
-              this.getData(cb);
-              break;
-            case INFLATING:
-            case DEFER_EVENT:
-              this._loop = false;
-              return;
-          }
-        } while (this._loop);
-        if (!this._errored) cb();
-      }
-      /**
-       * Reads the first two bytes of a frame.
-       *
-       * @param {Function} cb Callback
-       * @private
-       */
-      getInfo(cb) {
-        if (this._bufferedBytes < 2) {
-          this._loop = false;
-          return;
-        }
-        const buf = this.consume(2);
-        if ((buf[0] & 48) !== 0) {
-          const error = this.createError(
-            RangeError,
-            "RSV2 and RSV3 must be clear",
-            true,
-            1002,
-            "WS_ERR_UNEXPECTED_RSV_2_3"
-          );
-          cb(error);
-          return;
-        }
-        const compressed = (buf[0] & 64) === 64;
-        if (compressed && !this._extensions[PerMessageDeflate2.extensionName]) {
-          const error = this.createError(
-            RangeError,
-            "RSV1 must be clear",
-            true,
-            1002,
-            "WS_ERR_UNEXPECTED_RSV_1"
-          );
-          cb(error);
-          return;
-        }
-        this._fin = (buf[0] & 128) === 128;
-        this._opcode = buf[0] & 15;
-        this._payloadLength = buf[1] & 127;
-        if (this._opcode === 0) {
-          if (compressed) {
-            const error = this.createError(
-              RangeError,
-              "RSV1 must be clear",
-              true,
-              1002,
-              "WS_ERR_UNEXPECTED_RSV_1"
-            );
-            cb(error);
-            return;
-          }
-          if (!this._fragmented) {
-            const error = this.createError(
-              RangeError,
-              "invalid opcode 0",
-              true,
-              1002,
-              "WS_ERR_INVALID_OPCODE"
-            );
-            cb(error);
-            return;
-          }
-          this._opcode = this._fragmented;
-        } else if (this._opcode === 1 || this._opcode === 2) {
-          if (this._fragmented) {
-            const error = this.createError(
-              RangeError,
-              `invalid opcode ${this._opcode}`,
-              true,
-              1002,
-              "WS_ERR_INVALID_OPCODE"
-            );
-            cb(error);
-            return;
-          }
-          this._compressed = compressed;
-        } else if (this._opcode > 7 && this._opcode < 11) {
-          if (!this._fin) {
-            const error = this.createError(
-              RangeError,
-              "FIN must be set",
-              true,
-              1002,
-              "WS_ERR_EXPECTED_FIN"
-            );
-            cb(error);
-            return;
-          }
-          if (compressed) {
-            const error = this.createError(
-              RangeError,
-              "RSV1 must be clear",
-              true,
-              1002,
-              "WS_ERR_UNEXPECTED_RSV_1"
-            );
-            cb(error);
-            return;
-          }
-          if (this._payloadLength > 125 || this._opcode === 8 && this._payloadLength === 1) {
-            const error = this.createError(
-              RangeError,
-              `invalid payload length ${this._payloadLength}`,
-              true,
-              1002,
-              "WS_ERR_INVALID_CONTROL_PAYLOAD_LENGTH"
-            );
-            cb(error);
-            return;
-          }
-        } else {
-          const error = this.createError(
-            RangeError,
-            `invalid opcode ${this._opcode}`,
-            true,
-            1002,
-            "WS_ERR_INVALID_OPCODE"
-          );
-          cb(error);
-          return;
-        }
-        if (!this._fin && !this._fragmented) this._fragmented = this._opcode;
-        this._masked = (buf[1] & 128) === 128;
-        if (this._isServer) {
-          if (!this._masked) {
-            const error = this.createError(
-              RangeError,
-              "MASK must be set",
-              true,
-              1002,
-              "WS_ERR_EXPECTED_MASK"
-            );
-            cb(error);
-            return;
-          }
-        } else if (this._masked) {
-          const error = this.createError(
-            RangeError,
-            "MASK must be clear",
-            true,
-            1002,
-            "WS_ERR_UNEXPECTED_MASK"
-          );
-          cb(error);
-          return;
-        }
-        if (this._payloadLength === 126) this._state = GET_PAYLOAD_LENGTH_16;
-        else if (this._payloadLength === 127) this._state = GET_PAYLOAD_LENGTH_64;
-        else this.haveLength(cb);
-      }
-      /**
-       * Gets extended payload length (7+16).
-       *
-       * @param {Function} cb Callback
-       * @private
-       */
-      getPayloadLength16(cb) {
-        if (this._bufferedBytes < 2) {
-          this._loop = false;
-          return;
-        }
-        this._payloadLength = this.consume(2).readUInt16BE(0);
-        this.haveLength(cb);
-      }
-      /**
-       * Gets extended payload length (7+64).
-       *
-       * @param {Function} cb Callback
-       * @private
-       */
-      getPayloadLength64(cb) {
-        if (this._bufferedBytes < 8) {
-          this._loop = false;
-          return;
-        }
-        const buf = this.consume(8);
-        const num = buf.readUInt32BE(0);
-        if (num > Math.pow(2, 53 - 32) - 1) {
-          const error = this.createError(
-            RangeError,
-            "Unsupported WebSocket frame: payload length > 2^53 - 1",
-            false,
-            1009,
-            "WS_ERR_UNSUPPORTED_DATA_PAYLOAD_LENGTH"
-          );
-          cb(error);
-          return;
-        }
-        this._payloadLength = num * Math.pow(2, 32) + buf.readUInt32BE(4);
-        this.haveLength(cb);
-      }
-      /**
-       * Payload length has been read.
-       *
-       * @param {Function} cb Callback
-       * @private
-       */
-      haveLength(cb) {
-        if (this._payloadLength && this._opcode < 8) {
-          this._totalPayloadLength += this._payloadLength;
-          if (this._totalPayloadLength > this._maxPayload && this._maxPayload > 0) {
-            const error = this.createError(
-              RangeError,
-              "Max payload size exceeded",
-              false,
-              1009,
-              "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH"
-            );
-            cb(error);
-            return;
-          }
-        }
-        if (this._masked) this._state = GET_MASK;
-        else this._state = GET_DATA;
-      }
-      /**
-       * Reads mask bytes.
-       *
-       * @private
-       */
-      getMask() {
-        if (this._bufferedBytes < 4) {
-          this._loop = false;
-          return;
-        }
-        this._mask = this.consume(4);
-        this._state = GET_DATA;
-      }
-      /**
-       * Reads data bytes.
-       *
-       * @param {Function} cb Callback
-       * @private
-       */
-      getData(cb) {
-        let data = EMPTY_BUFFER;
-        if (this._payloadLength) {
-          if (this._bufferedBytes < this._payloadLength) {
-            this._loop = false;
-            return;
-          }
-          data = this.consume(this._payloadLength);
-          if (this._masked && (this._mask[0] | this._mask[1] | this._mask[2] | this._mask[3]) !== 0) {
-            unmask(data, this._mask);
-          }
-        }
-        if (this._opcode > 7) {
-          this.controlMessage(data, cb);
-          return;
-        }
-        if (this._maxFragments > 0 && ++this._numFragments > this._maxFragments) {
-          const error = this.createError(
-            RangeError,
-            "Too many message fragments",
-            false,
-            1008,
-            "WS_ERR_TOO_MANY_BUFFERED_PARTS"
-          );
-          cb(error);
-          return;
-        }
-        if (this._compressed) {
-          this._state = INFLATING;
-          this.decompress(data, cb);
-          return;
-        }
-        if (data.length) {
-          this._messageLength = this._totalPayloadLength;
-          this._fragments.push(data);
-        }
-        this.dataMessage(cb);
-      }
-      /**
-       * Decompresses data.
-       *
-       * @param {Buffer} data Compressed data
-       * @param {Function} cb Callback
-       * @private
-       */
-      decompress(data, cb) {
-        const perMessageDeflate = this._extensions[PerMessageDeflate2.extensionName];
-        perMessageDeflate.decompress(data, this._fin, (err, buf) => {
-          if (err) return cb(err);
-          if (buf.length) {
-            this._messageLength += buf.length;
-            if (this._messageLength > this._maxPayload && this._maxPayload > 0) {
-              const error = this.createError(
-                RangeError,
-                "Max payload size exceeded",
-                false,
-                1009,
-                "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH"
-              );
-              cb(error);
-              return;
-            }
-            this._fragments.push(buf);
-          }
-          this.dataMessage(cb);
-          if (this._state === GET_INFO) this.startLoop(cb);
-        });
-      }
-      /**
-       * Handles a data message.
-       *
-       * @param {Function} cb Callback
-       * @private
-       */
-      dataMessage(cb) {
-        if (!this._fin) {
-          this._state = GET_INFO;
-          return;
-        }
-        const messageLength = this._messageLength;
-        const fragments = this._fragments;
-        this._totalPayloadLength = 0;
-        this._messageLength = 0;
-        this._fragmented = 0;
-        this._numFragments = 0;
-        this._fragments = [];
-        if (this._opcode === 2) {
-          let data;
-          if (this._binaryType === "nodebuffer") {
-            data = concat(fragments, messageLength);
-          } else if (this._binaryType === "arraybuffer") {
-            data = toArrayBuffer(concat(fragments, messageLength));
-          } else if (this._binaryType === "blob") {
-            data = new Blob(fragments);
-          } else {
-            data = fragments;
-          }
-          if (this._allowSynchronousEvents) {
-            this.emit("message", data, true);
-            this._state = GET_INFO;
-          } else {
-            this._state = DEFER_EVENT;
-            setImmediate(() => {
-              this.emit("message", data, true);
-              this._state = GET_INFO;
-              this.startLoop(cb);
-            });
-          }
-        } else {
-          const buf = concat(fragments, messageLength);
-          if (!this._skipUTF8Validation && !isValidUTF8(buf)) {
-            const error = this.createError(
-              Error,
-              "invalid UTF-8 sequence",
-              true,
-              1007,
-              "WS_ERR_INVALID_UTF8"
-            );
-            cb(error);
-            return;
-          }
-          if (this._state === INFLATING || this._allowSynchronousEvents) {
-            this.emit("message", buf, false);
-            this._state = GET_INFO;
-          } else {
-            this._state = DEFER_EVENT;
-            setImmediate(() => {
-              this.emit("message", buf, false);
-              this._state = GET_INFO;
-              this.startLoop(cb);
-            });
-          }
-        }
-      }
-      /**
-       * Handles a control message.
-       *
-       * @param {Buffer} data Data to handle
-       * @return {(Error|RangeError|undefined)} A possible error
-       * @private
-       */
-      controlMessage(data, cb) {
-        if (this._opcode === 8) {
-          if (data.length === 0) {
-            this._loop = false;
-            this.emit("conclude", 1005, EMPTY_BUFFER);
-            this.end();
-          } else {
-            const code = data.readUInt16BE(0);
-            if (!isValidStatusCode(code)) {
-              const error = this.createError(
-                RangeError,
-                `invalid status code ${code}`,
-                true,
-                1002,
-                "WS_ERR_INVALID_CLOSE_CODE"
-              );
-              cb(error);
-              return;
-            }
-            const buf = new FastBuffer(
-              data.buffer,
-              data.byteOffset + 2,
-              data.length - 2
-            );
-            if (!this._skipUTF8Validation && !isValidUTF8(buf)) {
-              const error = this.createError(
-                Error,
-                "invalid UTF-8 sequence",
-                true,
-                1007,
-                "WS_ERR_INVALID_UTF8"
-              );
-              cb(error);
-              return;
-            }
-            this._loop = false;
-            this.emit("conclude", code, buf);
-            this.end();
-          }
-          this._state = GET_INFO;
-          return;
-        }
-        if (this._allowSynchronousEvents) {
-          this.emit(this._opcode === 9 ? "ping" : "pong", data);
-          this._state = GET_INFO;
-        } else {
-          this._state = DEFER_EVENT;
-          setImmediate(() => {
-            this.emit(this._opcode === 9 ? "ping" : "pong", data);
-            this._state = GET_INFO;
-            this.startLoop(cb);
-          });
-        }
-      }
-      /**
-       * Builds an error object.
-       *
-       * @param {function(new:Error|RangeError)} ErrorCtor The error constructor
-       * @param {String} message The error message
-       * @param {Boolean} prefix Specifies whether or not to add a default prefix to
-       *     `message`
-       * @param {Number} statusCode The status code
-       * @param {String} errorCode The exposed error code
-       * @return {(Error|RangeError)} The error
-       * @private
-       */
-      createError(ErrorCtor, message, prefix, statusCode, errorCode) {
-        this._loop = false;
-        this._errored = true;
-        const err = new ErrorCtor(
-          prefix ? `Invalid WebSocket frame: ${message}` : message
-        );
-        Error.captureStackTrace(err, this.createError);
-        err.code = errorCode;
-        err[kStatusCode] = statusCode;
-        return err;
-      }
-    };
-    module.exports = Receiver2;
-  }
-});
-
-// node_modules/ws/lib/sender.js
-var require_sender = __commonJS({
-  "node_modules/ws/lib/sender.js"(exports, module) {
-    "use strict";
-    var { Duplex } = __require("stream");
-    var { randomFillSync } = __require("crypto");
-    var {
-      types: { isUint8Array }
-    } = __require("util");
-    var PerMessageDeflate2 = require_permessage_deflate();
-    var { EMPTY_BUFFER, kWebSocket, NOOP } = require_constants();
-    var { isBlob, isValidStatusCode } = require_validation();
-    var { mask: applyMask, toBuffer } = require_buffer_util();
-    var kByteLength = Symbol("kByteLength");
-    var maskBuffer = Buffer.alloc(4);
-    var RANDOM_POOL_SIZE = 8 * 1024;
-    var randomPool;
-    var randomPoolPointer = RANDOM_POOL_SIZE;
-    var DEFAULT = 0;
-    var DEFLATING = 1;
-    var GET_BLOB_DATA = 2;
-    var Sender2 = class _Sender {
-      /**
-       * Creates a Sender instance.
-       *
-       * @param {Duplex} socket The connection socket
-       * @param {Object} [extensions] An object containing the negotiated extensions
-       * @param {Function} [generateMask] The function used to generate the masking
-       *     key
-       */
-      constructor(socket, extensions, generateMask) {
-        this._extensions = extensions || {};
-        if (generateMask) {
-          this._generateMask = generateMask;
-          this._maskBuffer = Buffer.alloc(4);
-        }
-        this._socket = socket;
-        this._firstFragment = true;
-        this._compress = false;
-        this._bufferedBytes = 0;
-        this._queue = [];
-        this._state = DEFAULT;
-        this.onerror = NOOP;
-        this[kWebSocket] = void 0;
-      }
-      /**
-       * Frames a piece of data according to the HyBi WebSocket protocol.
-       *
-       * @param {(Buffer|String)} data The data to frame
-       * @param {Object} options Options object
-       * @param {Boolean} [options.fin=false] Specifies whether or not to set the
-       *     FIN bit
-       * @param {Function} [options.generateMask] The function used to generate the
-       *     masking key
-       * @param {Boolean} [options.mask=false] Specifies whether or not to mask
-       *     `data`
-       * @param {Buffer} [options.maskBuffer] The buffer used to store the masking
-       *     key
-       * @param {Number} options.opcode The opcode
-       * @param {Boolean} [options.readOnly=false] Specifies whether `data` can be
-       *     modified
-       * @param {Boolean} [options.rsv1=false] Specifies whether or not to set the
-       *     RSV1 bit
-       * @return {(Buffer|String)[]} The framed data
-       * @public
-       */
-      static frame(data, options) {
-        let mask;
-        let merge = false;
-        let offset = 2;
-        let skipMasking = false;
-        if (options.mask) {
-          mask = options.maskBuffer || maskBuffer;
-          if (options.generateMask) {
-            options.generateMask(mask);
-          } else {
-            if (randomPoolPointer === RANDOM_POOL_SIZE) {
-              if (randomPool === void 0) {
-                randomPool = Buffer.alloc(RANDOM_POOL_SIZE);
-              }
-              randomFillSync(randomPool, 0, RANDOM_POOL_SIZE);
-              randomPoolPointer = 0;
-            }
-            mask[0] = randomPool[randomPoolPointer++];
-            mask[1] = randomPool[randomPoolPointer++];
-            mask[2] = randomPool[randomPoolPointer++];
-            mask[3] = randomPool[randomPoolPointer++];
-          }
-          skipMasking = (mask[0] | mask[1] | mask[2] | mask[3]) === 0;
-          offset = 6;
-        }
-        let dataLength;
-        if (typeof data === "string") {
-          if ((!options.mask || skipMasking) && options[kByteLength] !== void 0) {
-            dataLength = options[kByteLength];
-          } else {
-            data = Buffer.from(data);
-            dataLength = data.length;
-          }
-        } else {
-          dataLength = data.length;
-          merge = options.mask && options.readOnly && !skipMasking;
-        }
-        let payloadLength = dataLength;
-        if (dataLength >= 65536) {
-          offset += 8;
-          payloadLength = 127;
-        } else if (dataLength > 125) {
-          offset += 2;
-          payloadLength = 126;
-        }
-        const target = Buffer.allocUnsafe(merge ? dataLength + offset : offset);
-        target[0] = options.fin ? options.opcode | 128 : options.opcode;
-        if (options.rsv1) target[0] |= 64;
-        target[1] = payloadLength;
-        if (payloadLength === 126) {
-          target.writeUInt16BE(dataLength, 2);
-        } else if (payloadLength === 127) {
-          target[2] = target[3] = 0;
-          target.writeUIntBE(dataLength, 4, 6);
-        }
-        if (!options.mask) return [target, data];
-        target[1] |= 128;
-        target[offset - 4] = mask[0];
-        target[offset - 3] = mask[1];
-        target[offset - 2] = mask[2];
-        target[offset - 1] = mask[3];
-        if (skipMasking) return [target, data];
-        if (merge) {
-          applyMask(data, mask, target, offset, dataLength);
-          return [target];
-        }
-        applyMask(data, mask, data, 0, dataLength);
-        return [target, data];
-      }
-      /**
-       * Sends a close message to the other peer.
-       *
-       * @param {Number} [code] The status code component of the body
-       * @param {(String|Buffer)} [data] The message component of the body
-       * @param {Boolean} [mask=false] Specifies whether or not to mask the message
-       * @param {Function} [cb] Callback
-       * @public
-       */
-      close(code, data, mask, cb) {
-        let buf;
-        if (code === void 0) {
-          buf = EMPTY_BUFFER;
-        } else if (typeof code !== "number" || !isValidStatusCode(code)) {
-          throw new TypeError("First argument must be a valid error code number");
-        } else if (data === void 0 || !data.length) {
-          buf = Buffer.allocUnsafe(2);
-          buf.writeUInt16BE(code, 0);
-        } else {
-          const length = Buffer.byteLength(data);
-          if (length > 123) {
-            throw new RangeError("The message must not be greater than 123 bytes");
-          }
-          buf = Buffer.allocUnsafe(2 + length);
-          buf.writeUInt16BE(code, 0);
-          if (typeof data === "string") {
-            buf.write(data, 2);
-          } else if (isUint8Array(data)) {
-            buf.set(data, 2);
-          } else {
-            throw new TypeError("Second argument must be a string or a Uint8Array");
-          }
-        }
-        const options = {
-          [kByteLength]: buf.length,
-          fin: true,
-          generateMask: this._generateMask,
-          mask,
-          maskBuffer: this._maskBuffer,
-          opcode: 8,
-          readOnly: false,
-          rsv1: false
-        };
-        if (this._state !== DEFAULT) {
-          this.enqueue([this.dispatch, buf, false, options, cb]);
-        } else {
-          this.sendFrame(_Sender.frame(buf, options), cb);
-        }
-      }
-      /**
-       * Sends a ping message to the other peer.
-       *
-       * @param {*} data The message to send
-       * @param {Boolean} [mask=false] Specifies whether or not to mask `data`
-       * @param {Function} [cb] Callback
-       * @public
-       */
-      ping(data, mask, cb) {
-        let byteLength;
-        let readOnly;
-        if (typeof data === "string") {
-          byteLength = Buffer.byteLength(data);
-          readOnly = false;
-        } else if (isBlob(data)) {
-          byteLength = data.size;
-          readOnly = false;
-        } else {
-          data = toBuffer(data);
-          byteLength = data.length;
-          readOnly = toBuffer.readOnly;
-        }
-        if (byteLength > 125) {
-          throw new RangeError("The data size must not be greater than 125 bytes");
-        }
-        const options = {
-          [kByteLength]: byteLength,
-          fin: true,
-          generateMask: this._generateMask,
-          mask,
-          maskBuffer: this._maskBuffer,
-          opcode: 9,
-          readOnly,
-          rsv1: false
-        };
-        if (isBlob(data)) {
-          if (this._state !== DEFAULT) {
-            this.enqueue([this.getBlobData, data, false, options, cb]);
-          } else {
-            this.getBlobData(data, false, options, cb);
-          }
-        } else if (this._state !== DEFAULT) {
-          this.enqueue([this.dispatch, data, false, options, cb]);
-        } else {
-          this.sendFrame(_Sender.frame(data, options), cb);
-        }
-      }
-      /**
-       * Sends a pong message to the other peer.
-       *
-       * @param {*} data The message to send
-       * @param {Boolean} [mask=false] Specifies whether or not to mask `data`
-       * @param {Function} [cb] Callback
-       * @public
-       */
-      pong(data, mask, cb) {
-        let byteLength;
-        let readOnly;
-        if (typeof data === "string") {
-          byteLength = Buffer.byteLength(data);
-          readOnly = false;
-        } else if (isBlob(data)) {
-          byteLength = data.size;
-          readOnly = false;
-        } else {
-          data = toBuffer(data);
-          byteLength = data.length;
-          readOnly = toBuffer.readOnly;
-        }
-        if (byteLength > 125) {
-          throw new RangeError("The data size must not be greater than 125 bytes");
-        }
-        const options = {
-          [kByteLength]: byteLength,
-          fin: true,
-          generateMask: this._generateMask,
-          mask,
-          maskBuffer: this._maskBuffer,
-          opcode: 10,
-          readOnly,
-          rsv1: false
-        };
-        if (isBlob(data)) {
-          if (this._state !== DEFAULT) {
-            this.enqueue([this.getBlobData, data, false, options, cb]);
-          } else {
-            this.getBlobData(data, false, options, cb);
-          }
-        } else if (this._state !== DEFAULT) {
-          this.enqueue([this.dispatch, data, false, options, cb]);
-        } else {
-          this.sendFrame(_Sender.frame(data, options), cb);
-        }
-      }
-      /**
-       * Sends a data message to the other peer.
-       *
-       * @param {*} data The message to send
-       * @param {Object} options Options object
-       * @param {Boolean} [options.binary=false] Specifies whether `data` is binary
-       *     or text
-       * @param {Boolean} [options.compress=false] Specifies whether or not to
-       *     compress `data`
-       * @param {Boolean} [options.fin=false] Specifies whether the fragment is the
-       *     last one
-       * @param {Boolean} [options.mask=false] Specifies whether or not to mask
-       *     `data`
-       * @param {Function} [cb] Callback
-       * @public
-       */
-      send(data, options, cb) {
-        const perMessageDeflate = this._extensions[PerMessageDeflate2.extensionName];
-        let opcode = options.binary ? 2 : 1;
-        let rsv1 = options.compress;
-        let byteLength;
-        let readOnly;
-        if (typeof data === "string") {
-          byteLength = Buffer.byteLength(data);
-          readOnly = false;
-        } else if (isBlob(data)) {
-          byteLength = data.size;
-          readOnly = false;
-        } else {
-          data = toBuffer(data);
-          byteLength = data.length;
-          readOnly = toBuffer.readOnly;
-        }
-        if (this._firstFragment) {
-          this._firstFragment = false;
-          if (rsv1 && perMessageDeflate && perMessageDeflate.params[perMessageDeflate._isServer ? "server_no_context_takeover" : "client_no_context_takeover"]) {
-            rsv1 = byteLength >= perMessageDeflate._threshold;
-          }
-          this._compress = rsv1;
-        } else {
-          rsv1 = false;
-          opcode = 0;
-        }
-        if (options.fin) this._firstFragment = true;
-        const opts = {
-          [kByteLength]: byteLength,
-          fin: options.fin,
-          generateMask: this._generateMask,
-          mask: options.mask,
-          maskBuffer: this._maskBuffer,
-          opcode,
-          readOnly,
-          rsv1
-        };
-        if (isBlob(data)) {
-          if (this._state !== DEFAULT) {
-            this.enqueue([this.getBlobData, data, this._compress, opts, cb]);
-          } else {
-            this.getBlobData(data, this._compress, opts, cb);
-          }
-        } else if (this._state !== DEFAULT) {
-          this.enqueue([this.dispatch, data, this._compress, opts, cb]);
-        } else {
-          this.dispatch(data, this._compress, opts, cb);
-        }
-      }
-      /**
-       * Gets the contents of a blob as binary data.
-       *
-       * @param {Blob} blob The blob
-       * @param {Boolean} [compress=false] Specifies whether or not to compress
-       *     the data
-       * @param {Object} options Options object
-       * @param {Boolean} [options.fin=false] Specifies whether or not to set the
-       *     FIN bit
-       * @param {Function} [options.generateMask] The function used to generate the
-       *     masking key
-       * @param {Boolean} [options.mask=false] Specifies whether or not to mask
-       *     `data`
-       * @param {Buffer} [options.maskBuffer] The buffer used to store the masking
-       *     key
-       * @param {Number} options.opcode The opcode
-       * @param {Boolean} [options.readOnly=false] Specifies whether `data` can be
-       *     modified
-       * @param {Boolean} [options.rsv1=false] Specifies whether or not to set the
-       *     RSV1 bit
-       * @param {Function} [cb] Callback
-       * @private
-       */
-      getBlobData(blob, compress, options, cb) {
-        this._bufferedBytes += options[kByteLength];
-        this._state = GET_BLOB_DATA;
-        blob.arrayBuffer().then((arrayBuffer) => {
-          if (this._socket.destroyed) {
-            const err = new Error(
-              "The socket was closed while the blob was being read"
-            );
-            process.nextTick(callCallbacks, this, err, cb);
-            return;
-          }
-          this._bufferedBytes -= options[kByteLength];
-          const data = toBuffer(arrayBuffer);
-          if (!compress) {
-            this._state = DEFAULT;
-            this.sendFrame(_Sender.frame(data, options), cb);
-            this.dequeue();
-          } else {
-            this.dispatch(data, compress, options, cb);
-          }
-        }).catch((err) => {
-          process.nextTick(onError, this, err, cb);
-        });
-      }
-      /**
-       * Dispatches a message.
-       *
-       * @param {(Buffer|String)} data The message to send
-       * @param {Boolean} [compress=false] Specifies whether or not to compress
-       *     `data`
-       * @param {Object} options Options object
-       * @param {Boolean} [options.fin=false] Specifies whether or not to set the
-       *     FIN bit
-       * @param {Function} [options.generateMask] The function used to generate the
-       *     masking key
-       * @param {Boolean} [options.mask=false] Specifies whether or not to mask
-       *     `data`
-       * @param {Buffer} [options.maskBuffer] The buffer used to store the masking
-       *     key
-       * @param {Number} options.opcode The opcode
-       * @param {Boolean} [options.readOnly=false] Specifies whether `data` can be
-       *     modified
-       * @param {Boolean} [options.rsv1=false] Specifies whether or not to set the
-       *     RSV1 bit
-       * @param {Function} [cb] Callback
-       * @private
-       */
-      dispatch(data, compress, options, cb) {
-        if (!compress) {
-          this.sendFrame(_Sender.frame(data, options), cb);
-          return;
-        }
-        const perMessageDeflate = this._extensions[PerMessageDeflate2.extensionName];
-        this._bufferedBytes += options[kByteLength];
-        this._state = DEFLATING;
-        perMessageDeflate.compress(data, options.fin, (_, buf) => {
-          if (this._socket.destroyed) {
-            const err = new Error(
-              "The socket was closed while data was being compressed"
-            );
-            callCallbacks(this, err, cb);
-            return;
-          }
-          this._bufferedBytes -= options[kByteLength];
-          this._state = DEFAULT;
-          options.readOnly = false;
-          this.sendFrame(_Sender.frame(buf, options), cb);
-          this.dequeue();
-        });
-      }
-      /**
-       * Executes queued send operations.
-       *
-       * @private
-       */
-      dequeue() {
-        while (this._state === DEFAULT && this._queue.length) {
-          const params = this._queue.shift();
-          this._bufferedBytes -= params[3][kByteLength];
-          Reflect.apply(params[0], this, params.slice(1));
-        }
-      }
-      /**
-       * Enqueues a send operation.
-       *
-       * @param {Array} params Send operation parameters.
-       * @private
-       */
-      enqueue(params) {
-        this._bufferedBytes += params[3][kByteLength];
-        this._queue.push(params);
-      }
-      /**
-       * Sends a frame.
-       *
-       * @param {(Buffer | String)[]} list The frame to send
-       * @param {Function} [cb] Callback
-       * @private
-       */
-      sendFrame(list, cb) {
-        if (list.length === 2) {
-          this._socket.cork();
-          this._socket.write(list[0]);
-          this._socket.write(list[1], cb);
-          this._socket.uncork();
-        } else {
-          this._socket.write(list[0], cb);
-        }
-      }
-    };
-    module.exports = Sender2;
-    function callCallbacks(sender, err, cb) {
-      if (typeof cb === "function") cb(err);
-      for (let i = 0; i < sender._queue.length; i++) {
-        const params = sender._queue[i];
-        const callback = params[params.length - 1];
-        if (typeof callback === "function") callback(err);
-      }
-    }
-    function onError(sender, err, cb) {
-      callCallbacks(sender, err, cb);
-      sender.onerror(err);
-    }
-  }
-});
-
-// node_modules/ws/lib/event-target.js
-var require_event_target = __commonJS({
-  "node_modules/ws/lib/event-target.js"(exports, module) {
-    "use strict";
-    var { kForOnEventAttribute, kListener } = require_constants();
-    var kCode = Symbol("kCode");
-    var kData = Symbol("kData");
-    var kError = Symbol("kError");
-    var kMessage = Symbol("kMessage");
-    var kReason = Symbol("kReason");
-    var kTarget = Symbol("kTarget");
-    var kType = Symbol("kType");
-    var kWasClean = Symbol("kWasClean");
-    var Event = class {
-      /**
-       * Create a new `Event`.
-       *
-       * @param {String} type The name of the event
-       * @throws {TypeError} If the `type` argument is not specified
-       */
-      constructor(type) {
-        this[kTarget] = null;
-        this[kType] = type;
-      }
-      /**
-       * @type {*}
-       */
-      get target() {
-        return this[kTarget];
-      }
-      /**
-       * @type {String}
-       */
-      get type() {
-        return this[kType];
-      }
-    };
-    Object.defineProperty(Event.prototype, "target", { enumerable: true });
-    Object.defineProperty(Event.prototype, "type", { enumerable: true });
-    var CloseEvent = class extends Event {
-      /**
-       * Create a new `CloseEvent`.
-       *
-       * @param {String} type The name of the event
-       * @param {Object} [options] A dictionary object that allows for setting
-       *     attributes via object members of the same name
-       * @param {Number} [options.code=0] The status code explaining why the
-       *     connection was closed
-       * @param {String} [options.reason=''] A human-readable string explaining why
-       *     the connection was closed
-       * @param {Boolean} [options.wasClean=false] Indicates whether or not the
-       *     connection was cleanly closed
-       */
-      constructor(type, options = {}) {
-        super(type);
-        this[kCode] = options.code === void 0 ? 0 : options.code;
-        this[kReason] = options.reason === void 0 ? "" : options.reason;
-        this[kWasClean] = options.wasClean === void 0 ? false : options.wasClean;
-      }
-      /**
-       * @type {Number}
-       */
-      get code() {
-        return this[kCode];
-      }
-      /**
-       * @type {String}
-       */
-      get reason() {
-        return this[kReason];
-      }
-      /**
-       * @type {Boolean}
-       */
-      get wasClean() {
-        return this[kWasClean];
-      }
-    };
-    Object.defineProperty(CloseEvent.prototype, "code", { enumerable: true });
-    Object.defineProperty(CloseEvent.prototype, "reason", { enumerable: true });
-    Object.defineProperty(CloseEvent.prototype, "wasClean", { enumerable: true });
-    var ErrorEvent = class extends Event {
-      /**
-       * Create a new `ErrorEvent`.
-       *
-       * @param {String} type The name of the event
-       * @param {Object} [options] A dictionary object that allows for setting
-       *     attributes via object members of the same name
-       * @param {*} [options.error=null] The error that generated this event
-       * @param {String} [options.message=''] The error message
-       */
-      constructor(type, options = {}) {
-        super(type);
-        this[kError] = options.error === void 0 ? null : options.error;
-        this[kMessage] = options.message === void 0 ? "" : options.message;
-      }
-      /**
-       * @type {*}
-       */
-      get error() {
-        return this[kError];
-      }
-      /**
-       * @type {String}
-       */
-      get message() {
-        return this[kMessage];
-      }
-    };
-    Object.defineProperty(ErrorEvent.prototype, "error", { enumerable: true });
-    Object.defineProperty(ErrorEvent.prototype, "message", { enumerable: true });
-    var MessageEvent = class extends Event {
-      /**
-       * Create a new `MessageEvent`.
-       *
-       * @param {String} type The name of the event
-       * @param {Object} [options] A dictionary object that allows for setting
-       *     attributes via object members of the same name
-       * @param {*} [options.data=null] The message content
-       */
-      constructor(type, options = {}) {
-        super(type);
-        this[kData] = options.data === void 0 ? null : options.data;
-      }
-      /**
-       * @type {*}
-       */
-      get data() {
-        return this[kData];
-      }
-    };
-    Object.defineProperty(MessageEvent.prototype, "data", { enumerable: true });
-    var EventTarget = {
-      /**
-       * Register an event listener.
-       *
-       * @param {String} type A string representing the event type to listen for
-       * @param {(Function|Object)} handler The listener to add
-       * @param {Object} [options] An options object specifies characteristics about
-       *     the event listener
-       * @param {Boolean} [options.once=false] A `Boolean` indicating that the
-       *     listener should be invoked at most once after being added. If `true`,
-       *     the listener would be automatically removed when invoked.
-       * @public
-       */
-      addEventListener(type, handler, options = {}) {
-        for (const listener of this.listeners(type)) {
-          if (!options[kForOnEventAttribute] && listener[kListener] === handler && !listener[kForOnEventAttribute]) {
-            return;
-          }
-        }
-        let wrapper;
-        if (type === "message") {
-          wrapper = function onMessage(data, isBinary) {
-            const event = new MessageEvent("message", {
-              data: isBinary ? data : data.toString()
-            });
-            event[kTarget] = this;
-            callListener(handler, this, event);
-          };
-        } else if (type === "close") {
-          wrapper = function onClose(code, message) {
-            const event = new CloseEvent("close", {
-              code,
-              reason: message.toString(),
-              wasClean: this._closeFrameReceived && this._closeFrameSent
-            });
-            event[kTarget] = this;
-            callListener(handler, this, event);
-          };
-        } else if (type === "error") {
-          wrapper = function onError(error) {
-            const event = new ErrorEvent("error", {
-              error,
-              message: error.message
-            });
-            event[kTarget] = this;
-            callListener(handler, this, event);
-          };
-        } else if (type === "open") {
-          wrapper = function onOpen() {
-            const event = new Event("open");
-            event[kTarget] = this;
-            callListener(handler, this, event);
-          };
-        } else {
-          return;
-        }
-        wrapper[kForOnEventAttribute] = !!options[kForOnEventAttribute];
-        wrapper[kListener] = handler;
-        if (options.once) {
-          this.once(type, wrapper);
-        } else {
-          this.on(type, wrapper);
-        }
-      },
-      /**
-       * Remove an event listener.
-       *
-       * @param {String} type A string representing the event type to remove
-       * @param {(Function|Object)} handler The listener to remove
-       * @public
-       */
-      removeEventListener(type, handler) {
-        for (const listener of this.listeners(type)) {
-          if (listener[kListener] === handler && !listener[kForOnEventAttribute]) {
-            this.removeListener(type, listener);
-            break;
-          }
-        }
-      }
-    };
-    module.exports = {
-      CloseEvent,
-      ErrorEvent,
-      Event,
-      EventTarget,
-      MessageEvent
-    };
-    function callListener(listener, thisArg, event) {
-      if (typeof listener === "object" && listener.handleEvent) {
-        listener.handleEvent.call(listener, event);
-      } else {
-        listener.call(thisArg, event);
-      }
-    }
-  }
-});
-
-// node_modules/ws/lib/extension.js
-var require_extension = __commonJS({
-  "node_modules/ws/lib/extension.js"(exports, module) {
-    "use strict";
-    var { tokenChars } = require_validation();
-    function push(dest, name, elem) {
-      if (dest[name] === void 0) dest[name] = [elem];
-      else dest[name].push(elem);
-    }
-    function parse(header) {
-      const offers = /* @__PURE__ */ Object.create(null);
-      let params = /* @__PURE__ */ Object.create(null);
-      let mustUnescape = false;
-      let isEscaping = false;
-      let inQuotes = false;
-      let extensionName;
-      let paramName;
-      let start = -1;
-      let code = -1;
-      let end = -1;
-      let i = 0;
-      for (; i < header.length; i++) {
-        code = header.charCodeAt(i);
-        if (extensionName === void 0) {
-          if (end === -1 && tokenChars[code] === 1) {
-            if (start === -1) start = i;
-          } else if (i !== 0 && (code === 32 || code === 9)) {
-            if (end === -1 && start !== -1) end = i;
-          } else if (code === 59 || code === 44) {
-            if (start === -1) {
-              throw new SyntaxError(`Unexpected character at index ${i}`);
-            }
-            if (end === -1) end = i;
-            const name = header.slice(start, end);
-            if (code === 44) {
-              push(offers, name, params);
-              params = /* @__PURE__ */ Object.create(null);
-            } else {
-              extensionName = name;
-            }
-            start = end = -1;
-          } else {
-            throw new SyntaxError(`Unexpected character at index ${i}`);
-          }
-        } else if (paramName === void 0) {
-          if (end === -1 && tokenChars[code] === 1) {
-            if (start === -1) start = i;
-          } else if (code === 32 || code === 9) {
-            if (end === -1 && start !== -1) end = i;
-          } else if (code === 59 || code === 44) {
-            if (start === -1) {
-              throw new SyntaxError(`Unexpected character at index ${i}`);
-            }
-            if (end === -1) end = i;
-            push(params, header.slice(start, end), true);
-            if (code === 44) {
-              push(offers, extensionName, params);
-              params = /* @__PURE__ */ Object.create(null);
-              extensionName = void 0;
-            }
-            start = end = -1;
-          } else if (code === 61 && start !== -1 && end === -1) {
-            paramName = header.slice(start, i);
-            start = end = -1;
-          } else {
-            throw new SyntaxError(`Unexpected character at index ${i}`);
-          }
-        } else {
-          if (isEscaping) {
-            if (tokenChars[code] !== 1) {
-              throw new SyntaxError(`Unexpected character at index ${i}`);
-            }
-            if (start === -1) start = i;
-            else if (!mustUnescape) mustUnescape = true;
-            isEscaping = false;
-          } else if (inQuotes) {
-            if (tokenChars[code] === 1) {
-              if (start === -1) start = i;
-            } else if (code === 34 && start !== -1) {
-              inQuotes = false;
-              end = i;
-            } else if (code === 92) {
-              isEscaping = true;
-            } else {
-              throw new SyntaxError(`Unexpected character at index ${i}`);
-            }
-          } else if (code === 34 && header.charCodeAt(i - 1) === 61) {
-            inQuotes = true;
-          } else if (end === -1 && tokenChars[code] === 1) {
-            if (start === -1) start = i;
-          } else if (start !== -1 && (code === 32 || code === 9)) {
-            if (end === -1) end = i;
-          } else if (code === 59 || code === 44) {
-            if (start === -1) {
-              throw new SyntaxError(`Unexpected character at index ${i}`);
-            }
-            if (end === -1) end = i;
-            let value = header.slice(start, end);
-            if (mustUnescape) {
-              value = value.replace(/\\/g, "");
-              mustUnescape = false;
-            }
-            push(params, paramName, value);
-            if (code === 44) {
-              push(offers, extensionName, params);
-              params = /* @__PURE__ */ Object.create(null);
-              extensionName = void 0;
-            }
-            paramName = void 0;
-            start = end = -1;
-          } else {
-            throw new SyntaxError(`Unexpected character at index ${i}`);
-          }
-        }
-      }
-      if (start === -1 || inQuotes || code === 32 || code === 9) {
-        throw new SyntaxError("Unexpected end of input");
-      }
-      if (end === -1) end = i;
-      const token = header.slice(start, end);
-      if (extensionName === void 0) {
-        push(offers, token, params);
-      } else {
-        if (paramName === void 0) {
-          push(params, token, true);
-        } else if (mustUnescape) {
-          push(params, paramName, token.replace(/\\/g, ""));
-        } else {
-          push(params, paramName, token);
-        }
-        push(offers, extensionName, params);
-      }
-      return offers;
-    }
-    function format(extensions) {
-      return Object.keys(extensions).map((extension2) => {
-        let configurations = extensions[extension2];
-        if (!Array.isArray(configurations)) configurations = [configurations];
-        return configurations.map((params) => {
-          return [extension2].concat(
-            Object.keys(params).map((k) => {
-              let values = params[k];
-              if (!Array.isArray(values)) values = [values];
-              return values.map((v) => v === true ? k : `${k}=${v}`).join("; ");
-            })
-          ).join("; ");
-        }).join(", ");
-      }).join(", ");
-    }
-    module.exports = { format, parse };
-  }
-});
-
-// node_modules/ws/lib/websocket.js
-var require_websocket = __commonJS({
-  "node_modules/ws/lib/websocket.js"(exports, module) {
-    "use strict";
-    var EventEmitter = __require("events");
-    var https = __require("https");
-    var http = __require("http");
-    var net = __require("net");
-    var tls = __require("tls");
-    var { randomBytes, createHash: createHash2 } = __require("crypto");
-    var { Duplex, Readable } = __require("stream");
-    var { URL } = __require("url");
-    var PerMessageDeflate2 = require_permessage_deflate();
-    var Receiver2 = require_receiver();
-    var Sender2 = require_sender();
-    var { isBlob } = require_validation();
-    var {
-      BINARY_TYPES,
-      CLOSE_TIMEOUT,
-      EMPTY_BUFFER,
-      GUID,
-      kForOnEventAttribute,
-      kListener,
-      kStatusCode,
-      kWebSocket,
-      NOOP
-    } = require_constants();
-    var {
-      EventTarget: { addEventListener, removeEventListener }
-    } = require_event_target();
-    var { format, parse } = require_extension();
-    var { toBuffer } = require_buffer_util();
-    var kAborted = Symbol("kAborted");
-    var protocolVersions = [8, 13];
-    var readyStates = ["CONNECTING", "OPEN", "CLOSING", "CLOSED"];
-    var subprotocolRegex = /^[!#$%&'*+\-.0-9A-Z^_`|a-z~]+$/;
-    var WebSocket2 = class _WebSocket extends EventEmitter {
-      /**
-       * Create a new `WebSocket`.
-       *
-       * @param {(String|URL)} address The URL to which to connect
-       * @param {(String|String[])} [protocols] The subprotocols
-       * @param {Object} [options] Connection options
-       */
-      constructor(address, protocols, options) {
-        super();
-        this._binaryType = BINARY_TYPES[0];
-        this._closeCode = 1006;
-        this._closeFrameReceived = false;
-        this._closeFrameSent = false;
-        this._closeMessage = EMPTY_BUFFER;
-        this._closeTimer = null;
-        this._errorEmitted = false;
-        this._extensions = {};
-        this._paused = false;
-        this._protocol = "";
-        this._readyState = _WebSocket.CONNECTING;
-        this._receiver = null;
-        this._sender = null;
-        this._socket = null;
-        if (address !== null) {
-          this._bufferedAmount = 0;
-          this._isServer = false;
-          this._redirects = 0;
-          if (protocols === void 0) {
-            if (!options || options.protocols === void 0) {
-              protocols = [];
-            } else if (Array.isArray(options.protocols)) {
-              protocols = options.protocols;
-            } else {
-              protocols = [options.protocols];
-            }
-          } else if (!Array.isArray(protocols)) {
-            if (typeof protocols === "object" && protocols !== null) {
-              options = protocols;
-              if (options.protocols === void 0) {
-                protocols = [];
-              } else if (Array.isArray(options.protocols)) {
-                protocols = options.protocols;
-              } else {
-                protocols = [options.protocols];
-              }
-            } else {
-              protocols = [protocols];
-            }
-          }
-          initAsClient(this, address, protocols, options);
-        } else {
-          this._autoPong = options.autoPong;
-          this._closeTimeout = options.closeTimeout;
-          this._isServer = true;
-        }
-      }
-      /**
-       * For historical reasons, the custom "nodebuffer" type is used by the default
-       * instead of "blob".
-       *
-       * @type {String}
-       */
-      get binaryType() {
-        return this._binaryType;
-      }
-      set binaryType(type) {
-        if (!BINARY_TYPES.includes(type)) return;
-        this._binaryType = type;
-        if (this._receiver) this._receiver._binaryType = type;
-      }
-      /**
-       * @type {Number}
-       */
-      get bufferedAmount() {
-        if (!this._socket) return this._bufferedAmount;
-        return this._socket._writableState.length + this._sender._bufferedBytes;
-      }
-      /**
-       * @type {String}
-       */
-      get extensions() {
-        return Object.keys(this._extensions).join();
-      }
-      /**
-       * @type {Boolean}
-       */
-      get isPaused() {
-        return this._paused;
-      }
-      /**
-       * @type {Function}
-       */
-      /* istanbul ignore next */
-      get onclose() {
-        return null;
-      }
-      /**
-       * @type {Function}
-       */
-      /* istanbul ignore next */
-      get onerror() {
-        return null;
-      }
-      /**
-       * @type {Function}
-       */
-      /* istanbul ignore next */
-      get onopen() {
-        return null;
-      }
-      /**
-       * @type {Function}
-       */
-      /* istanbul ignore next */
-      get onmessage() {
-        return null;
-      }
-      /**
-       * @type {String}
-       */
-      get protocol() {
-        return this._protocol;
-      }
-      /**
-       * @type {Number}
-       */
-      get readyState() {
-        return this._readyState;
-      }
-      /**
-       * @type {String}
-       */
-      get url() {
-        return this._url;
-      }
-      /**
-       * Set up the socket and the internal resources.
-       *
-       * @param {Duplex} socket The network socket between the server and client
-       * @param {Buffer} head The first packet of the upgraded stream
-       * @param {Object} options Options object
-       * @param {Boolean} [options.allowSynchronousEvents=false] Specifies whether
-       *     any of the `'message'`, `'ping'`, and `'pong'` events can be emitted
-       *     multiple times in the same tick
-       * @param {Function} [options.generateMask] The function used to generate the
-       *     masking key
-       * @param {Number} [options.maxBufferedChunks=0] The maximum number of
-       *     buffered data chunks
-       * @param {Number} [options.maxFragments=0] The maximum number of message
-       *     fragments
-       * @param {Number} [options.maxPayload=0] The maximum allowed message size
-       * @param {Boolean} [options.skipUTF8Validation=false] Specifies whether or
-       *     not to skip UTF-8 validation for text and close messages
-       * @private
-       */
-      setSocket(socket, head, options) {
-        const receiver = new Receiver2({
-          allowSynchronousEvents: options.allowSynchronousEvents,
-          binaryType: this.binaryType,
-          extensions: this._extensions,
-          isServer: this._isServer,
-          maxBufferedChunks: options.maxBufferedChunks,
-          maxFragments: options.maxFragments,
-          maxPayload: options.maxPayload,
-          skipUTF8Validation: options.skipUTF8Validation
-        });
-        const sender = new Sender2(socket, this._extensions, options.generateMask);
-        this._receiver = receiver;
-        this._sender = sender;
-        this._socket = socket;
-        receiver[kWebSocket] = this;
-        sender[kWebSocket] = this;
-        socket[kWebSocket] = this;
-        receiver.on("conclude", receiverOnConclude);
-        receiver.on("drain", receiverOnDrain);
-        receiver.on("error", receiverOnError);
-        receiver.on("message", receiverOnMessage);
-        receiver.on("ping", receiverOnPing);
-        receiver.on("pong", receiverOnPong);
-        sender.onerror = senderOnError;
-        if (socket.setTimeout) socket.setTimeout(0);
-        if (socket.setNoDelay) socket.setNoDelay();
-        if (head.length > 0) socket.unshift(head);
-        socket.on("close", socketOnClose);
-        socket.on("data", socketOnData);
-        socket.on("end", socketOnEnd);
-        socket.on("error", socketOnError);
-        this._readyState = _WebSocket.OPEN;
-        this.emit("open");
-      }
-      /**
-       * Emit the `'close'` event.
-       *
-       * @private
-       */
-      emitClose() {
-        if (!this._socket) {
-          this._readyState = _WebSocket.CLOSED;
-          this.emit("close", this._closeCode, this._closeMessage);
-          return;
-        }
-        if (this._extensions[PerMessageDeflate2.extensionName]) {
-          this._extensions[PerMessageDeflate2.extensionName].cleanup();
-        }
-        this._receiver.removeAllListeners();
-        this._readyState = _WebSocket.CLOSED;
-        this.emit("close", this._closeCode, this._closeMessage);
-      }
-      /**
-       * Start a closing handshake.
-       *
-       *          +----------+   +-----------+   +----------+
-       *     - - -|ws.close()|-->|close frame|-->|ws.close()|- - -
-       *    |     +----------+   +-----------+   +----------+     |
-       *          +----------+   +-----------+         |
-       * CLOSING  |ws.close()|<--|close frame|<--+-----+       CLOSING
-       *          +----------+   +-----------+   |
-       *    |           |                        |   +---+        |
-       *                +------------------------+-->|fin| - - - -
-       *    |         +---+                      |   +---+
-       *     - - - - -|fin|<---------------------+
-       *              +---+
-       *
-       * @param {Number} [code] Status code explaining why the connection is closing
-       * @param {(String|Buffer)} [data] The reason why the connection is
-       *     closing
-       * @public
-       */
-      close(code, data) {
-        if (this.readyState === _WebSocket.CLOSED) return;
-        if (this.readyState === _WebSocket.CONNECTING) {
-          const msg = "WebSocket was closed before the connection was established";
-          abortHandshake(this, this._req, msg);
-          return;
-        }
-        if (this.readyState === _WebSocket.CLOSING) {
-          if (this._closeFrameSent && (this._closeFrameReceived || this._receiver._writableState.errorEmitted)) {
-            this._socket.end();
-          }
-          return;
-        }
-        this._sender.close(code, data, !this._isServer, (err) => {
-          if (err) return;
-          this._closeFrameSent = true;
-          if (this._closeFrameReceived || this._receiver._writableState.errorEmitted) {
-            this._socket.end();
-          }
-        });
-        this._readyState = _WebSocket.CLOSING;
-        setCloseTimer(this);
-      }
-      /**
-       * Pause the socket.
-       *
-       * @public
-       */
-      pause() {
-        if (this.readyState === _WebSocket.CONNECTING || this.readyState === _WebSocket.CLOSED) {
-          return;
-        }
-        this._paused = true;
-        this._socket.pause();
-      }
-      /**
-       * Send a ping.
-       *
-       * @param {*} [data] The data to send
-       * @param {Boolean} [mask] Indicates whether or not to mask `data`
-       * @param {Function} [cb] Callback which is executed when the ping is sent
-       * @public
-       */
-      ping(data, mask, cb) {
-        if (this.readyState === _WebSocket.CONNECTING) {
-          throw new Error("WebSocket is not open: readyState 0 (CONNECTING)");
-        }
-        if (typeof data === "function") {
-          cb = data;
-          data = mask = void 0;
-        } else if (typeof mask === "function") {
-          cb = mask;
-          mask = void 0;
-        }
-        if (typeof data === "number") data = data.toString();
-        if (this.readyState !== _WebSocket.OPEN) {
-          sendAfterClose(this, data, cb);
-          return;
-        }
-        if (mask === void 0) mask = !this._isServer;
-        this._sender.ping(data || EMPTY_BUFFER, mask, cb);
-      }
-      /**
-       * Send a pong.
-       *
-       * @param {*} [data] The data to send
-       * @param {Boolean} [mask] Indicates whether or not to mask `data`
-       * @param {Function} [cb] Callback which is executed when the pong is sent
-       * @public
-       */
-      pong(data, mask, cb) {
-        if (this.readyState === _WebSocket.CONNECTING) {
-          throw new Error("WebSocket is not open: readyState 0 (CONNECTING)");
-        }
-        if (typeof data === "function") {
-          cb = data;
-          data = mask = void 0;
-        } else if (typeof mask === "function") {
-          cb = mask;
-          mask = void 0;
-        }
-        if (typeof data === "number") data = data.toString();
-        if (this.readyState !== _WebSocket.OPEN) {
-          sendAfterClose(this, data, cb);
-          return;
-        }
-        if (mask === void 0) mask = !this._isServer;
-        this._sender.pong(data || EMPTY_BUFFER, mask, cb);
-      }
-      /**
-       * Resume the socket.
-       *
-       * @public
-       */
-      resume() {
-        if (this.readyState === _WebSocket.CONNECTING || this.readyState === _WebSocket.CLOSED) {
-          return;
-        }
-        this._paused = false;
-        if (!this._receiver._writableState.needDrain) this._socket.resume();
-      }
-      /**
-       * Send a data message.
-       *
-       * @param {*} data The message to send
-       * @param {Object} [options] Options object
-       * @param {Boolean} [options.binary] Specifies whether `data` is binary or
-       *     text
-       * @param {Boolean} [options.compress] Specifies whether or not to compress
-       *     `data`
-       * @param {Boolean} [options.fin=true] Specifies whether the fragment is the
-       *     last one
-       * @param {Boolean} [options.mask] Specifies whether or not to mask `data`
-       * @param {Function} [cb] Callback which is executed when data is written out
-       * @public
-       */
-      send(data, options, cb) {
-        if (this.readyState === _WebSocket.CONNECTING) {
-          throw new Error("WebSocket is not open: readyState 0 (CONNECTING)");
-        }
-        if (typeof options === "function") {
-          cb = options;
-          options = {};
-        }
-        if (typeof data === "number") data = data.toString();
-        if (this.readyState !== _WebSocket.OPEN) {
-          sendAfterClose(this, data, cb);
-          return;
-        }
-        const opts = {
-          binary: typeof data !== "string",
-          mask: !this._isServer,
-          compress: true,
-          fin: true,
-          ...options
-        };
-        if (!this._extensions[PerMessageDeflate2.extensionName]) {
-          opts.compress = false;
-        }
-        this._sender.send(data || EMPTY_BUFFER, opts, cb);
-      }
-      /**
-       * Forcibly close the connection.
-       *
-       * @public
-       */
-      terminate() {
-        if (this.readyState === _WebSocket.CLOSED) return;
-        if (this.readyState === _WebSocket.CONNECTING) {
-          const msg = "WebSocket was closed before the connection was established";
-          abortHandshake(this, this._req, msg);
-          return;
-        }
-        if (this._socket) {
-          this._readyState = _WebSocket.CLOSING;
-          this._socket.destroy();
-        }
-      }
-    };
-    Object.defineProperty(WebSocket2, "CONNECTING", {
-      enumerable: true,
-      value: readyStates.indexOf("CONNECTING")
-    });
-    Object.defineProperty(WebSocket2.prototype, "CONNECTING", {
-      enumerable: true,
-      value: readyStates.indexOf("CONNECTING")
-    });
-    Object.defineProperty(WebSocket2, "OPEN", {
-      enumerable: true,
-      value: readyStates.indexOf("OPEN")
-    });
-    Object.defineProperty(WebSocket2.prototype, "OPEN", {
-      enumerable: true,
-      value: readyStates.indexOf("OPEN")
-    });
-    Object.defineProperty(WebSocket2, "CLOSING", {
-      enumerable: true,
-      value: readyStates.indexOf("CLOSING")
-    });
-    Object.defineProperty(WebSocket2.prototype, "CLOSING", {
-      enumerable: true,
-      value: readyStates.indexOf("CLOSING")
-    });
-    Object.defineProperty(WebSocket2, "CLOSED", {
-      enumerable: true,
-      value: readyStates.indexOf("CLOSED")
-    });
-    Object.defineProperty(WebSocket2.prototype, "CLOSED", {
-      enumerable: true,
-      value: readyStates.indexOf("CLOSED")
-    });
-    [
-      "binaryType",
-      "bufferedAmount",
-      "extensions",
-      "isPaused",
-      "protocol",
-      "readyState",
-      "url"
-    ].forEach((property) => {
-      Object.defineProperty(WebSocket2.prototype, property, { enumerable: true });
-    });
-    ["open", "error", "close", "message"].forEach((method) => {
-      Object.defineProperty(WebSocket2.prototype, `on${method}`, {
-        enumerable: true,
-        get() {
-          for (const listener of this.listeners(method)) {
-            if (listener[kForOnEventAttribute]) return listener[kListener];
-          }
-          return null;
-        },
-        set(handler) {
-          for (const listener of this.listeners(method)) {
-            if (listener[kForOnEventAttribute]) {
-              this.removeListener(method, listener);
-              break;
-            }
-          }
-          if (typeof handler !== "function") return;
-          this.addEventListener(method, handler, {
-            [kForOnEventAttribute]: true
-          });
-        }
-      });
-    });
-    WebSocket2.prototype.addEventListener = addEventListener;
-    WebSocket2.prototype.removeEventListener = removeEventListener;
-    module.exports = WebSocket2;
-    function initAsClient(websocket, address, protocols, options) {
-      const opts = {
-        allowSynchronousEvents: true,
-        autoPong: true,
-        closeTimeout: CLOSE_TIMEOUT,
-        protocolVersion: protocolVersions[1],
-        maxBufferedChunks: 256 * 1024,
-        maxFragments: 16 * 1024,
-        maxPayload: 100 * 1024 * 1024,
-        skipUTF8Validation: false,
-        perMessageDeflate: true,
-        followRedirects: false,
-        maxRedirects: 10,
-        ...options,
-        socketPath: void 0,
-        hostname: void 0,
-        protocol: void 0,
-        protocols: void 0,
-        timeout: void 0,
-        method: "GET",
-        host: void 0,
-        path: void 0,
-        port: void 0
-      };
-      websocket._autoPong = opts.autoPong;
-      websocket._closeTimeout = opts.closeTimeout;
-      if (!protocolVersions.includes(opts.protocolVersion)) {
-        throw new RangeError(
-          `Unsupported protocol version: ${opts.protocolVersion} (supported versions: ${protocolVersions.join(", ")})`
-        );
-      }
-      let parsedUrl;
-      if (address instanceof URL) {
-        parsedUrl = address;
-      } else {
-        try {
-          parsedUrl = new URL(address);
-        } catch {
-          throw new SyntaxError(`Invalid URL: ${address}`);
-        }
-      }
-      if (parsedUrl.protocol === "http:") {
-        parsedUrl.protocol = "ws:";
-      } else if (parsedUrl.protocol === "https:") {
-        parsedUrl.protocol = "wss:";
-      }
-      websocket._url = parsedUrl.href;
-      const isSecure = parsedUrl.protocol === "wss:";
-      const isIpcUrl = parsedUrl.protocol === "ws+unix:";
-      let invalidUrlMessage;
-      if (parsedUrl.protocol !== "ws:" && !isSecure && !isIpcUrl) {
-        invalidUrlMessage = `The URL's protocol must be one of "ws:", "wss:", "http:", "https:", or "ws+unix:"`;
-      } else if (isIpcUrl && !parsedUrl.pathname) {
-        invalidUrlMessage = "The URL's pathname is empty";
-      } else if (parsedUrl.hash) {
-        invalidUrlMessage = "The URL contains a fragment identifier";
-      }
-      if (invalidUrlMessage) {
-        const err = new SyntaxError(invalidUrlMessage);
-        if (websocket._redirects === 0) {
-          throw err;
-        } else {
-          emitErrorAndClose(websocket, err);
-          return;
-        }
-      }
-      const defaultPort = isSecure ? 443 : 80;
-      const key = randomBytes(16).toString("base64");
-      const request = isSecure ? https.request : http.request;
-      const protocolSet = /* @__PURE__ */ new Set();
-      let perMessageDeflate;
-      opts.createConnection = opts.createConnection || (isSecure ? tlsConnect : netConnect);
-      opts.defaultPort = opts.defaultPort || defaultPort;
-      opts.port = parsedUrl.port || defaultPort;
-      opts.host = parsedUrl.hostname.startsWith("[") ? parsedUrl.hostname.slice(1, -1) : parsedUrl.hostname;
-      opts.headers = {
-        ...opts.headers,
-        "Sec-WebSocket-Version": opts.protocolVersion,
-        "Sec-WebSocket-Key": key,
-        Connection: "Upgrade",
-        Upgrade: "websocket"
-      };
-      opts.path = parsedUrl.pathname + parsedUrl.search;
-      opts.timeout = opts.handshakeTimeout;
-      if (opts.perMessageDeflate) {
-        perMessageDeflate = new PerMessageDeflate2({
-          ...opts.perMessageDeflate,
-          isServer: false,
-          maxPayload: opts.maxPayload
-        });
-        opts.headers["Sec-WebSocket-Extensions"] = format({
-          [PerMessageDeflate2.extensionName]: perMessageDeflate.offer()
-        });
-      }
-      if (protocols.length) {
-        for (const protocol of protocols) {
-          if (typeof protocol !== "string" || !subprotocolRegex.test(protocol) || protocolSet.has(protocol)) {
-            throw new SyntaxError(
-              "An invalid or duplicated subprotocol was specified"
-            );
-          }
-          protocolSet.add(protocol);
-        }
-        opts.headers["Sec-WebSocket-Protocol"] = protocols.join(",");
-      }
-      if (opts.origin) {
-        if (opts.protocolVersion < 13) {
-          opts.headers["Sec-WebSocket-Origin"] = opts.origin;
-        } else {
-          opts.headers.Origin = opts.origin;
-        }
-      }
-      if (parsedUrl.username || parsedUrl.password) {
-        opts.auth = `${parsedUrl.username}:${parsedUrl.password}`;
-      }
-      if (isIpcUrl) {
-        const parts = opts.path.split(":");
-        opts.socketPath = parts[0];
-        opts.path = parts[1];
-      }
-      let req;
-      if (opts.followRedirects) {
-        if (websocket._redirects === 0) {
-          websocket._originalIpc = isIpcUrl;
-          websocket._originalSecure = isSecure;
-          websocket._originalHostOrSocketPath = isIpcUrl ? opts.socketPath : parsedUrl.host;
-          const headers = options && options.headers;
-          options = { ...options, headers: {} };
-          if (headers) {
-            for (const [key2, value] of Object.entries(headers)) {
-              options.headers[key2.toLowerCase()] = value;
-            }
-          }
-        } else if (websocket.listenerCount("redirect") === 0) {
-          const isSameHost = isIpcUrl ? websocket._originalIpc ? opts.socketPath === websocket._originalHostOrSocketPath : false : websocket._originalIpc ? false : parsedUrl.host === websocket._originalHostOrSocketPath;
-          if (!isSameHost || websocket._originalSecure && !isSecure) {
-            delete opts.headers.authorization;
-            delete opts.headers.cookie;
-            if (!isSameHost) delete opts.headers.host;
-            opts.auth = void 0;
-          }
-        }
-        if (opts.auth && !options.headers.authorization) {
-          options.headers.authorization = "Basic " + Buffer.from(opts.auth).toString("base64");
-        }
-        req = websocket._req = request(opts);
-        if (websocket._redirects) {
-          websocket.emit("redirect", websocket.url, req);
-        }
-      } else {
-        req = websocket._req = request(opts);
-      }
-      if (opts.timeout) {
-        req.on("timeout", () => {
-          abortHandshake(websocket, req, "Opening handshake has timed out");
-        });
-      }
-      req.on("error", (err) => {
-        if (req === null || req[kAborted]) return;
-        req = websocket._req = null;
-        emitErrorAndClose(websocket, err);
-      });
-      req.on("response", (res) => {
-        const location = res.headers.location;
-        const statusCode = res.statusCode;
-        if (location && opts.followRedirects && statusCode >= 300 && statusCode < 400) {
-          if (++websocket._redirects > opts.maxRedirects) {
-            abortHandshake(websocket, req, "Maximum redirects exceeded");
-            return;
-          }
-          req.abort();
-          let addr;
-          try {
-            addr = new URL(location, address);
-          } catch (e) {
-            const err = new SyntaxError(`Invalid URL: ${location}`);
-            emitErrorAndClose(websocket, err);
-            return;
-          }
-          initAsClient(websocket, addr, protocols, options);
-        } else if (!websocket.emit("unexpected-response", req, res)) {
-          abortHandshake(
-            websocket,
-            req,
-            `Unexpected server response: ${res.statusCode}`
-          );
-        }
-      });
-      req.on("upgrade", (res, socket, head) => {
-        websocket.emit("upgrade", res);
-        if (websocket.readyState !== WebSocket2.CONNECTING) return;
-        req = websocket._req = null;
-        const upgrade = res.headers.upgrade;
-        if (upgrade === void 0 || upgrade.toLowerCase() !== "websocket") {
-          abortHandshake(websocket, socket, "Invalid Upgrade header");
-          return;
-        }
-        const digest = createHash2("sha1").update(key + GUID).digest("base64");
-        if (res.headers["sec-websocket-accept"] !== digest) {
-          abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
-          return;
-        }
-        const serverProt = res.headers["sec-websocket-protocol"];
-        let protError;
-        if (serverProt !== void 0) {
-          if (!protocolSet.size) {
-            protError = "Server sent a subprotocol but none was requested";
-          } else if (!protocolSet.has(serverProt)) {
-            protError = "Server sent an invalid subprotocol";
-          }
-        } else if (protocolSet.size) {
-          protError = "Server sent no subprotocol";
-        }
-        if (protError) {
-          abortHandshake(websocket, socket, protError);
-          return;
-        }
-        if (serverProt) websocket._protocol = serverProt;
-        const secWebSocketExtensions = res.headers["sec-websocket-extensions"];
-        if (secWebSocketExtensions !== void 0) {
-          if (!perMessageDeflate) {
-            const message = "Server sent a Sec-WebSocket-Extensions header but no extension was requested";
-            abortHandshake(websocket, socket, message);
-            return;
-          }
-          let extensions;
-          try {
-            extensions = parse(secWebSocketExtensions);
-          } catch (err) {
-            const message = "Invalid Sec-WebSocket-Extensions header";
-            abortHandshake(websocket, socket, message);
-            return;
-          }
-          const extensionNames = Object.keys(extensions);
-          if (extensionNames.length !== 1 || extensionNames[0] !== PerMessageDeflate2.extensionName) {
-            const message = "Server indicated an extension that was not requested";
-            abortHandshake(websocket, socket, message);
-            return;
-          }
-          try {
-            perMessageDeflate.accept(extensions[PerMessageDeflate2.extensionName]);
-          } catch (err) {
-            const message = "Invalid Sec-WebSocket-Extensions header";
-            abortHandshake(websocket, socket, message);
-            return;
-          }
-          websocket._extensions[PerMessageDeflate2.extensionName] = perMessageDeflate;
-        }
-        websocket.setSocket(socket, head, {
-          allowSynchronousEvents: opts.allowSynchronousEvents,
-          generateMask: opts.generateMask,
-          maxBufferedChunks: opts.maxBufferedChunks,
-          maxFragments: opts.maxFragments,
-          maxPayload: opts.maxPayload,
-          skipUTF8Validation: opts.skipUTF8Validation
-        });
-      });
-      if (opts.finishRequest) {
-        opts.finishRequest(req, websocket);
-      } else {
-        req.end();
-      }
-    }
-    function emitErrorAndClose(websocket, err) {
-      websocket._readyState = WebSocket2.CLOSING;
-      websocket._errorEmitted = true;
-      websocket.emit("error", err);
-      websocket.emitClose();
-    }
-    function netConnect(options) {
-      options.path = options.socketPath;
-      return net.connect(options);
-    }
-    function tlsConnect(options) {
-      options.path = void 0;
-      if (!options.servername && options.servername !== "") {
-        options.servername = net.isIP(options.host) ? "" : options.host;
-      }
-      return tls.connect(options);
-    }
-    function abortHandshake(websocket, stream, message) {
-      websocket._readyState = WebSocket2.CLOSING;
-      const err = new Error(message);
-      Error.captureStackTrace(err, abortHandshake);
-      if (stream.setHeader) {
-        stream[kAborted] = true;
-        stream.abort();
-        if (stream.socket && !stream.socket.destroyed) {
-          stream.socket.destroy();
-        }
-        process.nextTick(emitErrorAndClose, websocket, err);
-      } else {
-        stream.destroy(err);
-        stream.once("error", websocket.emit.bind(websocket, "error"));
-        stream.once("close", websocket.emitClose.bind(websocket));
-      }
-    }
-    function sendAfterClose(websocket, data, cb) {
-      if (data) {
-        const length = isBlob(data) ? data.size : toBuffer(data).length;
-        if (websocket._socket) websocket._sender._bufferedBytes += length;
-        else websocket._bufferedAmount += length;
-      }
-      if (cb) {
-        const err = new Error(
-          `WebSocket is not open: readyState ${websocket.readyState} (${readyStates[websocket.readyState]})`
-        );
-        process.nextTick(cb, err);
-      }
-    }
-    function receiverOnConclude(code, reason) {
-      const websocket = this[kWebSocket];
-      websocket._closeFrameReceived = true;
-      websocket._closeMessage = reason;
-      websocket._closeCode = code;
-      if (websocket._socket[kWebSocket] === void 0) return;
-      websocket._socket.removeListener("data", socketOnData);
-      process.nextTick(resume, websocket._socket);
-      if (code === 1005) websocket.close();
-      else websocket.close(code, reason);
-    }
-    function receiverOnDrain() {
-      const websocket = this[kWebSocket];
-      if (!websocket.isPaused) websocket._socket.resume();
-    }
-    function receiverOnError(err) {
-      const websocket = this[kWebSocket];
-      if (websocket._socket[kWebSocket] !== void 0) {
-        websocket._socket.removeListener("data", socketOnData);
-        process.nextTick(resume, websocket._socket);
-        websocket.close(err[kStatusCode]);
-      }
-      if (!websocket._errorEmitted) {
-        websocket._errorEmitted = true;
-        websocket.emit("error", err);
-      }
-    }
-    function receiverOnFinish() {
-      this[kWebSocket].emitClose();
-    }
-    function receiverOnMessage(data, isBinary) {
-      this[kWebSocket].emit("message", data, isBinary);
-    }
-    function receiverOnPing(data) {
-      const websocket = this[kWebSocket];
-      if (websocket._autoPong) websocket.pong(data, !this._isServer, NOOP);
-      websocket.emit("ping", data);
-    }
-    function receiverOnPong(data) {
-      this[kWebSocket].emit("pong", data);
-    }
-    function resume(stream) {
-      stream.resume();
-    }
-    function senderOnError(err) {
-      const websocket = this[kWebSocket];
-      if (websocket.readyState === WebSocket2.CLOSED) return;
-      if (websocket.readyState === WebSocket2.OPEN) {
-        websocket._readyState = WebSocket2.CLOSING;
-        setCloseTimer(websocket);
-      }
-      this._socket.end();
-      if (!websocket._errorEmitted) {
-        websocket._errorEmitted = true;
-        websocket.emit("error", err);
-      }
-    }
-    function setCloseTimer(websocket) {
-      websocket._closeTimer = setTimeout(
-        websocket._socket.destroy.bind(websocket._socket),
-        websocket._closeTimeout
-      );
-    }
-    function socketOnClose() {
-      const websocket = this[kWebSocket];
-      this.removeListener("close", socketOnClose);
-      this.removeListener("data", socketOnData);
-      this.removeListener("end", socketOnEnd);
-      websocket._readyState = WebSocket2.CLOSING;
-      if (!this._readableState.endEmitted && !websocket._closeFrameReceived && !websocket._receiver._writableState.errorEmitted && this._readableState.length !== 0) {
-        const chunk = this.read(this._readableState.length);
-        websocket._receiver.write(chunk);
-      }
-      websocket._receiver.end();
-      this[kWebSocket] = void 0;
-      clearTimeout(websocket._closeTimer);
-      if (websocket._receiver._writableState.finished || websocket._receiver._writableState.errorEmitted) {
-        websocket.emitClose();
-      } else {
-        websocket._receiver.on("error", receiverOnFinish);
-        websocket._receiver.on("finish", receiverOnFinish);
-      }
-    }
-    function socketOnData(chunk) {
-      if (!this[kWebSocket]._receiver.write(chunk)) {
-        this.pause();
-      }
-    }
-    function socketOnEnd() {
-      const websocket = this[kWebSocket];
-      websocket._readyState = WebSocket2.CLOSING;
-      websocket._receiver.end();
-      this.end();
-    }
-    function socketOnError() {
-      const websocket = this[kWebSocket];
-      this.removeListener("error", socketOnError);
-      this.on("error", NOOP);
-      if (websocket) {
-        websocket._readyState = WebSocket2.CLOSING;
-        this.destroy();
-      }
-    }
-  }
-});
-
-// node_modules/ws/lib/stream.js
-var require_stream = __commonJS({
-  "node_modules/ws/lib/stream.js"(exports, module) {
-    "use strict";
-    var WebSocket2 = require_websocket();
-    var { Duplex } = __require("stream");
-    function emitClose(stream) {
-      stream.emit("close");
-    }
-    function duplexOnEnd() {
-      if (!this.destroyed && this._writableState.finished) {
-        this.destroy();
-      }
-    }
-    function duplexOnError(err) {
-      this.removeListener("error", duplexOnError);
-      this.destroy();
-      if (this.listenerCount("error") === 0) {
-        this.emit("error", err);
-      }
-    }
-    function createWebSocketStream2(ws, options) {
-      let terminateOnDestroy = true;
-      const duplex = new Duplex({
-        ...options,
-        autoDestroy: false,
-        emitClose: false,
-        objectMode: false,
-        writableObjectMode: false
-      });
-      ws.on("message", function message(msg, isBinary) {
-        const data = !isBinary && duplex._readableState.objectMode ? msg.toString() : msg;
-        if (!duplex.push(data)) ws.pause();
-      });
-      ws.once("error", function error(err) {
-        if (duplex.destroyed) return;
-        terminateOnDestroy = false;
-        duplex.destroy(err);
-      });
-      ws.once("close", function close() {
-        if (duplex.destroyed) return;
-        duplex.push(null);
-      });
-      duplex._destroy = function(err, callback) {
-        if (ws.readyState === ws.CLOSED) {
-          callback(err);
-          process.nextTick(emitClose, duplex);
-          return;
-        }
-        let called = false;
-        ws.once("error", function error(err2) {
-          called = true;
-          callback(err2);
-        });
-        ws.once("close", function close() {
-          if (!called) callback(err);
-          process.nextTick(emitClose, duplex);
-        });
-        if (terminateOnDestroy) ws.terminate();
-      };
-      duplex._final = function(callback) {
-        if (ws.readyState === ws.CONNECTING) {
-          ws.once("open", function open() {
-            duplex._final(callback);
-          });
-          return;
-        }
-        if (ws._socket === null) return;
-        if (ws._socket._writableState.finished) {
-          callback();
-          if (duplex._readableState.endEmitted) duplex.destroy();
-        } else {
-          ws._socket.once("finish", function finish() {
-            callback();
-          });
-          ws.close();
-        }
-      };
-      duplex._read = function() {
-        if (ws.isPaused) ws.resume();
-      };
-      duplex._write = function(chunk, encoding, callback) {
-        if (ws.readyState === ws.CONNECTING) {
-          ws.once("open", function open() {
-            duplex._write(chunk, encoding, callback);
-          });
-          return;
-        }
-        ws.send(chunk, callback);
-      };
-      duplex.on("end", duplexOnEnd);
-      duplex.on("error", duplexOnError);
-      return duplex;
-    }
-    module.exports = createWebSocketStream2;
-  }
-});
-
-// node_modules/ws/lib/subprotocol.js
-var require_subprotocol = __commonJS({
-  "node_modules/ws/lib/subprotocol.js"(exports, module) {
-    "use strict";
-    var { tokenChars } = require_validation();
-    function parse(header) {
-      const protocols = /* @__PURE__ */ new Set();
-      let start = -1;
-      let end = -1;
-      let i = 0;
-      for (i; i < header.length; i++) {
-        const code = header.charCodeAt(i);
-        if (end === -1 && tokenChars[code] === 1) {
-          if (start === -1) start = i;
-        } else if (i !== 0 && (code === 32 || code === 9)) {
-          if (end === -1 && start !== -1) end = i;
-        } else if (code === 44) {
-          if (start === -1) {
-            throw new SyntaxError(`Unexpected character at index ${i}`);
-          }
-          if (end === -1) end = i;
-          const protocol2 = header.slice(start, end);
-          if (protocols.has(protocol2)) {
-            throw new SyntaxError(`The "${protocol2}" subprotocol is duplicated`);
-          }
-          protocols.add(protocol2);
-          start = end = -1;
-        } else {
-          throw new SyntaxError(`Unexpected character at index ${i}`);
-        }
-      }
-      if (start === -1 || end !== -1) {
-        throw new SyntaxError("Unexpected end of input");
-      }
-      const protocol = header.slice(start, i);
-      if (protocols.has(protocol)) {
-        throw new SyntaxError(`The "${protocol}" subprotocol is duplicated`);
-      }
-      protocols.add(protocol);
-      return protocols;
-    }
-    module.exports = { parse };
-  }
-});
-
-// node_modules/ws/lib/websocket-server.js
-var require_websocket_server = __commonJS({
-  "node_modules/ws/lib/websocket-server.js"(exports, module) {
-    "use strict";
-    var EventEmitter = __require("events");
-    var http = __require("http");
-    var { Duplex } = __require("stream");
-    var { createHash: createHash2 } = __require("crypto");
-    var extension2 = require_extension();
-    var PerMessageDeflate2 = require_permessage_deflate();
-    var subprotocol2 = require_subprotocol();
-    var WebSocket2 = require_websocket();
-    var { CLOSE_TIMEOUT, GUID, kWebSocket } = require_constants();
-    var keyRegex = /^[+/0-9A-Za-z]{22}==$/;
-    var RUNNING = 0;
-    var CLOSING = 1;
-    var CLOSED = 2;
-    var WebSocketServer2 = class extends EventEmitter {
-      /**
-       * Create a `WebSocketServer` instance.
-       *
-       * @param {Object} options Configuration options
-       * @param {Boolean} [options.allowSynchronousEvents=true] Specifies whether
-       *     any of the `'message'`, `'ping'`, and `'pong'` events can be emitted
-       *     multiple times in the same tick
-       * @param {Boolean} [options.autoPong=true] Specifies whether or not to
-       *     automatically send a pong in response to a ping
-       * @param {Number} [options.backlog=511] The maximum length of the queue of
-       *     pending connections
-       * @param {Boolean} [options.clientTracking=true] Specifies whether or not to
-       *     track clients
-       * @param {Number} [options.closeTimeout=30000] Duration in milliseconds to
-       *     wait for the closing handshake to finish after `websocket.close()` is
-       *     called
-       * @param {Function} [options.handleProtocols] A hook to handle protocols
-       * @param {String} [options.host] The hostname where to bind the server
-       * @param {Number} [options.maxBufferedChunks=262144] The maximum number of
-       *     buffered data chunks
-       * @param {Number} [options.maxFragments=16384] The maximum number of message
-       *     fragments
-       * @param {Number} [options.maxPayload=104857600] The maximum allowed message
-       *     size
-       * @param {Boolean} [options.noServer=false] Enable no server mode
-       * @param {String} [options.path] Accept only connections matching this path
-       * @param {(Boolean|Object)} [options.perMessageDeflate=false] Enable/disable
-       *     permessage-deflate
-       * @param {Number} [options.port] The port where to bind the server
-       * @param {(http.Server|https.Server)} [options.server] A pre-created HTTP/S
-       *     server to use
-       * @param {Boolean} [options.skipUTF8Validation=false] Specifies whether or
-       *     not to skip UTF-8 validation for text and close messages
-       * @param {Function} [options.verifyClient] A hook to reject connections
-       * @param {Function} [options.WebSocket=WebSocket] Specifies the `WebSocket`
-       *     class to use. It must be the `WebSocket` class or class that extends it
-       * @param {Function} [callback] A listener for the `listening` event
-       */
-      constructor(options, callback) {
-        super();
-        options = {
-          allowSynchronousEvents: true,
-          autoPong: true,
-          maxBufferedChunks: 256 * 1024,
-          maxFragments: 16 * 1024,
-          maxPayload: 100 * 1024 * 1024,
-          skipUTF8Validation: false,
-          perMessageDeflate: false,
-          handleProtocols: null,
-          clientTracking: true,
-          closeTimeout: CLOSE_TIMEOUT,
-          verifyClient: null,
-          noServer: false,
-          backlog: null,
-          // use default (511 as implemented in net.js)
-          server: null,
-          host: null,
-          path: null,
-          port: null,
-          WebSocket: WebSocket2,
-          ...options
-        };
-        if (options.port == null && !options.server && !options.noServer || options.port != null && (options.server || options.noServer) || options.server && options.noServer) {
-          throw new TypeError(
-            'One and only one of the "port", "server", or "noServer" options must be specified'
-          );
-        }
-        if (options.port != null) {
-          this._server = http.createServer((req, res) => {
-            const body = http.STATUS_CODES[426];
-            res.writeHead(426, {
-              "Content-Length": body.length,
-              "Content-Type": "text/plain"
-            });
-            res.end(body);
-          });
-          this._server.listen(
-            options.port,
-            options.host,
-            options.backlog,
-            callback
-          );
-        } else if (options.server) {
-          this._server = options.server;
-        }
-        if (this._server) {
-          const emitConnection = this.emit.bind(this, "connection");
-          this._removeListeners = addListeners(this._server, {
-            listening: this.emit.bind(this, "listening"),
-            error: this.emit.bind(this, "error"),
-            upgrade: (req, socket, head) => {
-              this.handleUpgrade(req, socket, head, emitConnection);
-            }
-          });
-        }
-        if (options.perMessageDeflate === true) options.perMessageDeflate = {};
-        if (options.clientTracking) {
-          this.clients = /* @__PURE__ */ new Set();
-          this._shouldEmitClose = false;
-        }
-        this.options = options;
-        this._state = RUNNING;
-      }
-      /**
-       * Returns the bound address, the address family name, and port of the server
-       * as reported by the operating system if listening on an IP socket.
-       * If the server is listening on a pipe or UNIX domain socket, the name is
-       * returned as a string.
-       *
-       * @return {(Object|String|null)} The address of the server
-       * @public
-       */
-      address() {
-        if (this.options.noServer) {
-          throw new Error('The server is operating in "noServer" mode');
-        }
-        if (!this._server) return null;
-        return this._server.address();
-      }
-      /**
-       * Stop the server from accepting new connections and emit the `'close'` event
-       * when all existing connections are closed.
-       *
-       * @param {Function} [cb] A one-time listener for the `'close'` event
-       * @public
-       */
-      close(cb) {
-        if (this._state === CLOSED) {
-          if (cb) {
-            this.once("close", () => {
-              cb(new Error("The server is not running"));
-            });
-          }
-          process.nextTick(emitClose, this);
-          return;
-        }
-        if (cb) this.once("close", cb);
-        if (this._state === CLOSING) return;
-        this._state = CLOSING;
-        if (this.options.noServer || this.options.server) {
-          if (this._server) {
-            this._removeListeners();
-            this._removeListeners = this._server = null;
-          }
-          if (this.clients) {
-            if (!this.clients.size) {
-              process.nextTick(emitClose, this);
-            } else {
-              this._shouldEmitClose = true;
-            }
-          } else {
-            process.nextTick(emitClose, this);
-          }
-        } else {
-          const server = this._server;
-          this._removeListeners();
-          this._removeListeners = this._server = null;
-          server.close(() => {
-            emitClose(this);
-          });
-        }
-      }
-      /**
-       * See if a given request should be handled by this server instance.
-       *
-       * @param {http.IncomingMessage} req Request object to inspect
-       * @return {Boolean} `true` if the request is valid, else `false`
-       * @public
-       */
-      shouldHandle(req) {
-        if (this.options.path) {
-          const index = req.url.indexOf("?");
-          const pathname = index !== -1 ? req.url.slice(0, index) : req.url;
-          if (pathname !== this.options.path) return false;
-        }
-        return true;
-      }
-      /**
-       * Handle a HTTP Upgrade request.
-       *
-       * @param {http.IncomingMessage} req The request object
-       * @param {Duplex} socket The network socket between the server and client
-       * @param {Buffer} head The first packet of the upgraded stream
-       * @param {Function} cb Callback
-       * @public
-       */
-      handleUpgrade(req, socket, head, cb) {
-        socket.on("error", socketOnError);
-        const key = req.headers["sec-websocket-key"];
-        const upgrade = req.headers.upgrade;
-        const version = +req.headers["sec-websocket-version"];
-        if (req.method !== "GET") {
-          const message = "Invalid HTTP method";
-          abortHandshakeOrEmitwsClientError(this, req, socket, 405, message);
-          return;
-        }
-        if (upgrade === void 0 || upgrade.toLowerCase() !== "websocket") {
-          const message = "Invalid Upgrade header";
-          abortHandshakeOrEmitwsClientError(this, req, socket, 400, message);
-          return;
-        }
-        if (key === void 0 || !keyRegex.test(key)) {
-          const message = "Missing or invalid Sec-WebSocket-Key header";
-          abortHandshakeOrEmitwsClientError(this, req, socket, 400, message);
-          return;
-        }
-        if (version !== 13 && version !== 8) {
-          const message = "Missing or invalid Sec-WebSocket-Version header";
-          abortHandshakeOrEmitwsClientError(this, req, socket, 400, message, {
-            "Sec-WebSocket-Version": "13, 8"
-          });
-          return;
-        }
-        if (!this.shouldHandle(req)) {
-          abortHandshake(socket, 400);
-          return;
-        }
-        const secWebSocketProtocol = req.headers["sec-websocket-protocol"];
-        let protocols = /* @__PURE__ */ new Set();
-        if (secWebSocketProtocol !== void 0) {
-          try {
-            protocols = subprotocol2.parse(secWebSocketProtocol);
-          } catch (err) {
-            const message = "Invalid Sec-WebSocket-Protocol header";
-            abortHandshakeOrEmitwsClientError(this, req, socket, 400, message);
-            return;
-          }
-        }
-        const secWebSocketExtensions = req.headers["sec-websocket-extensions"];
-        const extensions = {};
-        if (this.options.perMessageDeflate && secWebSocketExtensions !== void 0) {
-          const perMessageDeflate = new PerMessageDeflate2({
-            ...this.options.perMessageDeflate,
-            isServer: true,
-            maxPayload: this.options.maxPayload
-          });
-          try {
-            const offers = extension2.parse(secWebSocketExtensions);
-            if (offers[PerMessageDeflate2.extensionName]) {
-              perMessageDeflate.accept(offers[PerMessageDeflate2.extensionName]);
-              extensions[PerMessageDeflate2.extensionName] = perMessageDeflate;
-            }
-          } catch (err) {
-            const message = "Invalid or unacceptable Sec-WebSocket-Extensions header";
-            abortHandshakeOrEmitwsClientError(this, req, socket, 400, message);
-            return;
-          }
-        }
-        if (this.options.verifyClient) {
-          const info = {
-            origin: req.headers[`${version === 8 ? "sec-websocket-origin" : "origin"}`],
-            secure: !!(req.socket.authorized || req.socket.encrypted),
-            req
-          };
-          if (this.options.verifyClient.length === 2) {
-            this.options.verifyClient(info, (verified, code, message, headers) => {
-              if (!verified) {
-                return abortHandshake(socket, code || 401, message, headers);
-              }
-              this.completeUpgrade(
-                extensions,
-                key,
-                protocols,
-                req,
-                socket,
-                head,
-                cb
-              );
-            });
-            return;
-          }
-          if (!this.options.verifyClient(info)) return abortHandshake(socket, 401);
-        }
-        this.completeUpgrade(extensions, key, protocols, req, socket, head, cb);
-      }
-      /**
-       * Upgrade the connection to WebSocket.
-       *
-       * @param {Object} extensions The accepted extensions
-       * @param {String} key The value of the `Sec-WebSocket-Key` header
-       * @param {Set} protocols The subprotocols
-       * @param {http.IncomingMessage} req The request object
-       * @param {Duplex} socket The network socket between the server and client
-       * @param {Buffer} head The first packet of the upgraded stream
-       * @param {Function} cb Callback
-       * @throws {Error} If called more than once with the same socket
-       * @private
-       */
-      completeUpgrade(extensions, key, protocols, req, socket, head, cb) {
-        if (!socket.readable || !socket.writable) return socket.destroy();
-        if (socket[kWebSocket]) {
-          throw new Error(
-            "server.handleUpgrade() was called more than once with the same socket, possibly due to a misconfiguration"
-          );
-        }
-        if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash2("sha1").update(key + GUID).digest("base64");
-        const headers = [
-          "HTTP/1.1 101 Switching Protocols",
-          "Upgrade: websocket",
-          "Connection: Upgrade",
-          `Sec-WebSocket-Accept: ${digest}`
-        ];
-        const ws = new this.options.WebSocket(null, void 0, this.options);
-        if (protocols.size) {
-          const protocol = this.options.handleProtocols ? this.options.handleProtocols(protocols, req) : protocols.values().next().value;
-          if (protocol) {
-            headers.push(`Sec-WebSocket-Protocol: ${protocol}`);
-            ws._protocol = protocol;
-          }
-        }
-        if (extensions[PerMessageDeflate2.extensionName]) {
-          const params = extensions[PerMessageDeflate2.extensionName].params;
-          const value = extension2.format({
-            [PerMessageDeflate2.extensionName]: [params]
-          });
-          headers.push(`Sec-WebSocket-Extensions: ${value}`);
-          ws._extensions = extensions;
-        }
-        this.emit("headers", headers, req);
-        socket.write(headers.concat("\r\n").join("\r\n"));
-        socket.removeListener("error", socketOnError);
-        ws.setSocket(socket, head, {
-          allowSynchronousEvents: this.options.allowSynchronousEvents,
-          maxBufferedChunks: this.options.maxBufferedChunks,
-          maxFragments: this.options.maxFragments,
-          maxPayload: this.options.maxPayload,
-          skipUTF8Validation: this.options.skipUTF8Validation
-        });
-        if (this.clients) {
-          this.clients.add(ws);
-          ws.on("close", () => {
-            this.clients.delete(ws);
-            if (this._shouldEmitClose && !this.clients.size) {
-              process.nextTick(emitClose, this);
-            }
-          });
-        }
-        cb(ws, req);
-      }
-    };
-    module.exports = WebSocketServer2;
-    function addListeners(server, map) {
-      for (const event of Object.keys(map)) server.on(event, map[event]);
-      return function removeListeners() {
-        for (const event of Object.keys(map)) {
-          server.removeListener(event, map[event]);
-        }
-      };
-    }
-    function emitClose(server) {
-      server._state = CLOSED;
-      server.emit("close");
-    }
-    function socketOnError() {
-      this.destroy();
-    }
-    function abortHandshake(socket, code, message, headers) {
-      message = message || http.STATUS_CODES[code];
-      headers = {
-        Connection: "close",
-        "Content-Type": "text/html",
-        "Content-Length": Buffer.byteLength(message),
-        ...headers
-      };
-      socket.once("finish", socket.destroy);
-      socket.end(
-        `HTTP/1.1 ${code} ${http.STATUS_CODES[code]}\r
-` + Object.keys(headers).map((h) => `${h}: ${headers[h]}`).join("\r\n") + "\r\n\r\n" + message
-      );
-    }
-    function abortHandshakeOrEmitwsClientError(server, req, socket, code, message, headers) {
-      if (server.listenerCount("wsClientError")) {
-        const err = new Error(message);
-        Error.captureStackTrace(err, abortHandshakeOrEmitwsClientError);
-        server.emit("wsClientError", err, socket, req);
-      } else {
-        abortHandshake(socket, code, message, headers);
-      }
-    }
-  }
-});
-
-// node_modules/ws/wrapper.mjs
-var import_stream = __toESM(require_stream(), 1);
-var import_extension = __toESM(require_extension(), 1);
-var import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
-var import_receiver = __toESM(require_receiver(), 1);
-var import_sender = __toESM(require_sender(), 1);
-var import_subprotocol = __toESM(require_subprotocol(), 1);
-var import_websocket = __toESM(require_websocket(), 1);
-var import_websocket_server = __toESM(require_websocket_server(), 1);
-
-// agent/leadsradar-agent.mjs
+import { WebSocket, WebSocketServer } from "ws";
 import {
   generateKeyPairSync,
   sign as edSign,
   createHash,
-  createPrivateKey
+  createPrivateKey,
 } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, readdirSync, copyFileSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, copyFileSync, unlinkSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -3741,79 +37,152 @@ import { createInterface } from "node:readline";
 import { createServer as createHttpServer } from "node:http";
 import { createConnection } from "node:net";
 import { execFile, spawn } from "node:child_process";
-var __dirname = dirname(fileURLToPath(import.meta.url));
-var PORT = Number(process.env.LEADSRADAR_AGENT_PORT) || 17373;
-var PROTOCOL_VERSION = "3";
-var SKILLS_LATEST = {
-  radar: "1.1.0",
-  insights: "2.2.0",
-  creator: "1.2.0",
-  closer: "1.3.0",
-  // ⭐R78 栗子触达精准触发词查漏
-  helper: "1.3.1"
-  // ⭐R78 触达路由+设置/学习 FAQ
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// ⭐413 冒烟隔离端口：默认 17373（插件硬编码），冒烟脚本可传 LEADSRADAR_AGENT_PORT 走独立端口避免与真机互抢
+const PORT = Number(process.env.LEADSRADAR_AGENT_PORT) || 17373;
+const PROTOCOL_VERSION = "3";
+// ⭐R76 五技能最新版本表：connection_status 附带下发（skills_latest），宿主 AI 对照自己技能文件 frontmatter 的
+//   version 自检——落后就指引用户更新技能（宿主技能安装机制各异，Agent 只能识别+指路、无法代更新）。
+//   维护纪律：五技能 SKILL.md 任一升版时同步改这里（与 agent-deploy/skills 真源对齐）
+const SKILLS_LATEST = {
+  radar: "1.2.75", // ⭐R96g1bd 1.2.74→1.2.75：渲染违规黑名单批（WorkBuddy 实收五违例钉死：①【作品详情】禁加粗独行旧结构必须两列标签表且只此三行禁自加行 ②互动行小红书禁🔁 ③【评论展示】禁「分级/数量/样本」计数表必须四列具体评论表 ④四宫格表+A3 统计行缺一不可帽行照抄禁加「指数」 ⑤结尾禁自创钩子【下一步行动】编号行即收尾）｜⭐R96gp 1.2.73→1.2.74：日报转派管家栗批（路由边界补「要日报（栗子日报/今天的日报/获客日报/昨天有什么线索）→管家栗」——用户实报「栗子日报」被情报栗劫持自由发挥旧格式，本栗接到转派禁自己调 get_daily_report 渲染）| ⭐R96gcj 1.2.72→1.2.73：采集默认 50 条提速批（触达 27s→≈15s，A3 集中按👍热门前列；深挖再加 100~200）| ⭐R96gax 唤醒词三层重构（主唤醒词+注册同义词+同语义模糊词 9 组）+关键词四岔口次位默认表+深采领取 A3 富矿分叉 | ⭐R96gaw 1.2.70→1.2.71：下一步行动五维评分批（⭐2026-11-03 用户拍板 6 项——①扫对标·有命中=研究 3.20+触达 3.10 两最高（池/现扫两路径统一，「探一下 <该号>」2.55 垫底退役，代表评论 top_leads 就是现成触达素材）②扫我的号·有命中=触达 3.40+我的线索 3.00（研究 2.95 出局——自己的号不拆自己的爆款）③删对标次位「查对标库」2.05→「栗子加监控」2.95（删除交付刚列完全表再查=重复）④关监控两行动对调：扫对标 3.40 首位·加监控 2.35 次位（刚关完就劝重开语气错位））｜⭐R96eq 1.2.65→1.2.66：命中快扫数据源换 week_hits 批（⭐2026-10-31 用户实报「7 天内命中 1 条（宝宝接电话呀～👍1572），本轮回执未带该篇快扫数据」——命中快扫/补扫双链候选池一直是 latest_notes（buildLatest slice(0,7) 时间降序截断），周发布 >7 条的号命中但发布较早的作品漏出 7 条帽双链都接不到永无 a3，R96df「命中优先补扫保证快扫块有料」在命中被截断时结构性失效，R96en「两轮 6 命中 0 快扫块」观察项的真正根因；修=agent-tasks.ts 新增 summary.week_hits 周命中全量字段双链候选池换源+补扫护栏 6 条/轮+latest_notes 7 条帽不动；SKILL【命中详情】两处数据源 week_hits 优先无字段回退 latest_notes hit 条目；引擎批须重载插件生效） ⭐R96ef ⭐R96ef 1.2.60→1.2.61：7 天外补足排除置顶批（⭐2026-10-31 用户拍板「图解万物 3 条确实是置顶——这是Bug，我们展示的是最新应该」：置顶是作者挑的橱窗位非时间最新，「7 天外最新 3 条」3 条全置顶旧作冒充最新实报是 bug）：三处引擎同款刀（agent-tasks.ts 监控池 query_local_data source=monitor——HitRow 补 is_pinned 声明+olderList→olderPick 排除置顶+items 透出 pinned 与 latest_notes 同款、capture_profile buildLatest olderPick、MonitorTab.tsx pickStripHits 同款）；口径=只从非置顶旧作里取最新补足、非置顶旧作空则不补足（不拿置顶凑数）、近 7 天组内不排除（7 天内发布的置顶=真新作，宿主「（置顶）」尾缀可辨）；SKILL 口径四处同步（监控池口径行/流程 E 照抄口径/自查定版段/【最新动态】置顶规改写「7 天外补足已排除置顶，pinned 尾缀现仅见于近 7 天组」）；引擎批须重载插件生效） ⭐R96ee 1.2.59→1.2.60：长任务开工预告+纯时间降序+置顶标记批（⭐2026-10-31 用户三反馈拍板，引擎 ADAPTER 1.2.134 同批须重载插件）：①开工预告纪律（用户拍板 A 方案「像栗子在吗的更新反馈一样提前给一句」——同步死等型任务宿主全程哑巴数分钟是痛点根因）：栗子仪式段新增 ⭐R96ee 长任务开工预告——预计超 1 分钟的任务（流程 E 现扫扫对标/扫我的、C1 关键词首扫、B 账号速览）开工语同一条消息内追加预告行 `⏳ 预计 X-Y 分钟 · 浏览器自动翻页采集属正常 · 跑完立刻回来汇报`；时长口径：E=每号 1-3 分钟×号数（深扫池未建/未满更久，首扫干满最长约 +40 分钟；刚扫过/池有料会更快，往快说不往慢说）、C1=1-3 分钟（指定条数多按比例加）、B=1-2 分钟；给区间禁精确秒数；预告行随开工语一次发出后即调工具执行中不再插话（tool call 期间宿主无法中途发言，预告的意义=把等多久说在前面）；快任务（<1 分钟：探作品/查库/查设置）不加预告保持轻快；预告行不算过程旁白（旁白砍执行中叙述，预告是开工时一次性预期管理，与零过程旁白不冲突）；流程 E 步骤 3 开头补落点「开扫前按栗子仪式发预告行：N 个号=预计 N×1-3 分钟」；②作品表纯时间降序（用户拍板「已有专门给命中的栏目，在任何情况下都按时间顺序排列」推翻 b18+ 命中置顶）：监控池口径改「近7天优先→时间降序（⭐R96ee 命中不置顶），上限 7 条」+自查定版段 latest_notes 口径同款+【最新动态】条目改「时间降序引擎已排好照抄顺序 ⭐R96ee 命中不置顶——命中与否只看命中列 ✅/—」；③置顶标记（用户问图解万物「不会采集的是三个置顶视频吧？」）：latest_notes 条目带 pinned:true 时标题尾缀「（置顶）」——置顶旧作混在「7 天外最新 3 条」里一眼可辨（图解万物 3 条全置顶实报），禁把置顶当最新误读。⭐R96dx 1.2.58→1.2.59：纯查交付三补批（⭐2026-10-31 用户复测三反馈）：①评论采集开关 emoji 定版——✅ 开（每条上限 N 条）/❌ 关（每条上限 N 条保留）成对，禁 ×/√ 纯文本符号（旧口径「开=√ 每条上限 N 条、关=×」是 SKILL 自己定的，用户实报两边都不对：× 没配对 emoji、√ 也不是 emoji）；②观察窗机制细节补进语义段+纯查说明行（答用户「观察窗口是观察啥呢？补充啥数据呢？」——云端每日扫描发现监控账号新作品入观察池，cron 每 12 小时回查一轮最新互动数据（赞数对照命中线），窗内爬到线=命中通知、到窗尾未达标=转观察完成不再盯；全程云端自动回查 TikHub 互动计数，用户无需补任何数据）；③云端行「web 端雷达页改」附跳转链接 [web 端雷达页改](https://app.leadsradar.cn/radar)（用户实报「应该给到跳转链接」）——纯查表第三列+修改表改后列+纯查纪律③+表格纪律四处同款。⭐R96dw 1.2.57→1.2.58：交付硬化+观察期语义校正批（⭐2026-10-31 用户四连反馈）：①纯查纪律四硬规进第 8 条（小标题【扫描/监控设置】必出/禁出【修改结果】——纯查回执无「上次改动」数据，出现「上次改动已生效」类回顾块=编造/云端监控必须表格最后一行禁表外独立文字行——宿主两次实测都落成散文行用户两报「还是没有成表格呈现」/表头三列固定「项目·当前值·推荐区间」禁合并说明列）；②观察期语义全端校正（代码实查：web monitoring/runner 唯一消费点——新作品观察窗窗内跟踪判命中超窗转观察完成，本机快扫深扫=近 7 天+命中条件即时判定不吃观察期；改口「命中条件对两端生效、观察期仅云端监控生效」——description/第 8 条/纯查模板说明行/表格括注同批）；③修改交付表格纪律补云端行禁令（禁表外文字行，两张表同规）。⭐R96dv 1.2.56→1.2.57：命中规则开窗+修改回执表格批（⭐2026-10-31 用户拍板「命中规则还有两条数据，也要可修改」「（云端监控）这个也要表格呈现」「加一个【修改结果】的小标题」）：①流程 F 第 8 条扩 hitMode/hitValue/observeHours 三参（命中条件+观察期两条，PUT /api/monitoring/settings 与插件「命中观察规则」同源，对两端生效需登录，未登录纯查静默省略/主动改回 LOGIN_REQUIRED）；②纯查【扫描/监控设置】表格补命中条件/观察期两行；③修改交付【修改结果】改前改后表定版（改后加粗+语义括注）+云端监控行固定进表尾+A3 提醒句只在真改评论采集才出；④明确全部非破坏性免确认直接改禁加「确定要改吗」类多问一句。⭐R96dt 1.2.55→1.2.56：扫描/监控设置升级批（⭐2026-10-31 用户拍板「扫描规则要用表格呈现：首次扫描/新增扫描（插件端也统一称呼，复扫都叫新增扫描）/评论采集√/×（X条）+推荐区间（20-500）（5-20）（10-100）+云端监控一起展示，升级为扫描/监控设置」；AskUserQuestion 拍板云端并入方式=「只读回显+指路 web」）：①流程 F 第 8 条查询输出表格化——【扫描/监控设置】三列表 |项目|当前值|推荐区间|：首次扫描 N 条（一次干满）(20-500)/新增扫描 N 条（只追新）(5-20)/评论采集 √ 每条上限 N 条 或 × (10-100)+已登录时云端监控行（频率·起扫时间，改值指路 web 端雷达页）；②称呼全端统一三项映射——首扫→首次扫描、复扫→新增扫描、深扫评论→评论采集（流程 F 触发段/交付段/【下一步行动】示例同步）；③触发词家族扩「栗子监控设置/扫描监控设置」（旧词栗子扫描设置同认）；④配套引擎 executeScanSettings 换词+cloudLine 云端只读回显（ADAPTER 1.2.124 同批）。⭐R96dq 1.2.54→1.2.55：扫描设置开窗+深扫阴阳规则批（⭐2026-10-30 用户三诉求「第一次直接按照全亮的 50 条…第二次采集的就不应该再出重复采集」「本地扫描的设置应该对话就可以操作，这个要开窗」「栗子扫描设置，触发词也加一下」）：①注册「栗子扫描设置」→ leadsradar_scan_settings（查+改 local_scan_settings 四字段：首扫 first 20-500 默认 50/复扫 rescan 5-20 默认 10/深扫评论开关 deepComments/每篇评论上限 deepCommentLimit 10-100 默认 30，与插件监控页「扫描规则」同份同源，不传参数=查看、传哪个改哪项、越界自动夹到边界）；流程 F 新增第 8 条扫描设置路径（免确认轻量交付）+触发词列表/分流表/requires 三处落位；②流程 E 深扫描述同步阴阳规则（首扫=一轮干满 first 条建池夹 50、复扫=rescan 只追新绝不重扫已扫作品，时长首扫最长约 +40 分钟）；⭐R96do 1.2.53→1.2.54：R96dn 复测两残留补——①七列表仍在（宿主违抗「汇总表退役」自画，latest_notes 字段全顺手就画，SKILL 两段禁令硬化「板块内禁画任何形式的命中汇总表」）；②引擎 top_leads 文本截 30 字（SKILL 承诺完整照抄禁截断，引擎先砍一刀，30→120 字覆盖 99% 评论）。⭐R96dn 1.2.52→1.2.53：扫对标三反馈批（⭐2026-10-30 用户实报：①抖音号粉丝仍显（→0）非（≤999）；②图解万物 7 天外作品发布时间恒 —；③【命中详情】七列表与【最新动态】重复拍板删、改展示代表评论方便评论和去触达）。根因①②同源=引擎 platform 兜底缺——capture_profile 工具 schema 无 platform 参数，宿主只传 url+limit，task.platform 空默认 "xiaohongshu"，delta_note（≤999）与发布时间补采两处 platform==="douyin" 守卫对抖音号恒 false（R96dk note/R96cl/R96ct 补采从未真正执行过；四象限回填不依赖守卫所以照常出值——同引擎不同命自洽），修=platform 非法/缺失时从 task.url 判 douyin.com（与 executeDeepProfile 同款）；③=SKILL 两段去表留块——七列汇总表退役（与【最新动态】作品表重复），快扫块保留+代表评论行强化（top_leads 完整照抄禁截断，触达素材位）。⭐R96dm 1.2.51→1.2.52：触发词家族补全批（⭐2026-10-30 用户要求「增加这几个：栗子加/删/查/扫对标（或我的号），栗子加/关监控」——盘点：加/删/扫对标·扫我的号·加/关监控六词早已注册（R74/R96as/R96bj/R96ca/R96bq），唯「栗子查对标」未注册（查对标库路径 R96ap 只有「查对标库/谁在监控中」等自然词形）；注册「栗子查对标」进 description 两处+触发表加行+流程 F 触发段，边界=带「对标/监控」字样归情报栗、管家栗「栗子查」只管本地资产细看）。⭐R96dk 1.2.50→1.2.51：扫我的四反馈（⭐2026-10-30 用户实报 a/b/c/d）①delta_note 极简「≤999」（拍板——抖音万位步进内两次同值方向不可判定禁编↑微涨/↓微跌，替代「±0.1万内」，表下解释行全删；小红书精确个位 delta=0 照旧显→0）②命中详情七列表 |#|账号|作品|发布|赞|A3|四象限|（A3 列=🟢强🟠弱无显—；四象限列=💎双高/🚀流量/🎯线索/💤双低，引擎 fillHitQuadrant 回填复用 R96bd calcTrafficIndex×calcNoteLeadIndex→classifyNoteQuadrant 同函数同口径）③禁解释旁白三条（直采说明句/7天外口径解释句/有命中时「无额外A3」补充句）④扫对标与扫我的 SKILL 两段同构同款同步改。⭐R96df 1.2.49→1.2.50：①深扫跟随扫描规则（首扫min(first,50)/复扫=rescan，单轮≤10条增量补池+池进度透出「池进度A/B未满下轮自动续」）②命中优先补扫（7天内命中不在深扫集的引擎单开页补采评论挂a3，≤2条/轮，独立hit账本::hits防重复扫）③【命中详情】禁拼「评论A3线索：🟢X🟠Y」账号级合计行（挂单作品语境误导成「这篇快扫就这水平」——实报与单篇深度采集四宫格差远；账号级合计只在完成行深扫行）；⭐R96cx 1.2.48→1.2.49：扫我的五反馈三修（⭐2026-10-29 用户实报五项）①【命中详情】只收 7 天内命中（拍板「太早的就不要重复展示了」）——引擎 latest_notes 7 天外补足条目改标 old_hit/old_obs，深扫快扫回填 filter status=hit 自动只对 7 天内（小米 3 条老命中全噪音三行 0 快扫随之消失）②快扫块复刻流程 A 四宫格（实报「格式跟评论拆解不一致，有四宫格/评论展示，尽量复刻」）——带 a3 的命中在汇总表后逐块：小标题+四宫格表（档位/标记/条数/占比）+A3 率行+top_leads 评论行③「1738.5万（→0）」获赞精度老 bug 复发——scan_delta 加 followers/total_likes_delta_note 万位步进注记（抖音粉丝/获赞 DOM 万位步进 delta<1000 恒 0，宿主括号照抄（±0.1万内）禁显（→0））+message 行获赞同款守卫（R96ct 只修了粉丝）；另三问归因非 bug 不改码：弹窗闪烁=r75 Agent 前台开 tab 设计（防后台隐藏页定时器节流，采集完即关）、小米「又深度采集」=旧版账本口径漏记（30 全采才记账 vs 平台每篇吐 18 条）本轮一次性补齐已记账下轮 skipWhenAllExcluded 跳过、140s 前摇主因即小米重扫（下轮回落）。上批 R96cn：扫对标四问题根修（⭐2026-10-28 用户实报四问）①图解万物（抖音图文号）发布时间仍「—」：当年作品详情页正文只显 MM-DD 短格式不带年份，R96cl 补采正则只认 2026-10-15 全格式对当年作品必 miss——引擎改三段式提取（SSR RENDER_DATA/_ROUTER_DATA createTime 毫秒戳 decodeURIComponent 后匹配最稳→DOM 全格式→MM-DD 引擎补年，拼出未来日期回退一年）②「板块一/二」前缀仍现：SKILL 真源 1.2.47 已含禁令，宿主技能未更新生效，随批发版走 leadsradar_get_latest_skills 更新③总表增量只有 Judy 有括号：scan_delta 对 0 变化已透出 followers_delta:0，旧口径 0=裸值与首轮无快照混淆——拍板改 0=（→0）也显括号④【命中详情】升级单篇快扫：深扫回执 enrichedComments 按 note.id 分组现成底座，hit 条目按 note_url→id 映射单独跑 quickScan 挂 a3 四宫格+top_leads（A3 优先点赞降序取 2 条文本截 30 字），7 天外老命中不在深扫集无评论数据不加引导裸行照旧（⭐拍板「老爆款没那么多价值」）｜前轮 ⭐R96cl 1.2.46→1.2.47：扫对标呈现四改+free 监控拦截（①交付标题去「板块N」前缀②作品表五列钉死禁删列③7 天外补足改最新 3 条时间降序④发布时间空补采详情页+free 点亮 403 会员文案+库况行 0/0 括注）｜前轮 ⭐R96ck 1.2.45→1.2.46：我的账号自带监控重开路径接通+监控位 X 计数修正（⭐2026-10-28 用户实报「1、我的账号无法加云端监控？这个解析下，到底啥情况？2、把我的账号抖音加监控、3加监控，4取消监控」附实收「⚠️ 小米公司（我的抖音）加不了也不需要加——它已绑定为你的『我的账号』自带云端监控+深度采集，直接用就行（当前它的自带监控处于暂停态，要重启去插件『监控』页点开关）」）：①self 重开路径根因——「我的账号」自带监控被「栗子关监控」暂停后（⭐R96ca 开窗含 self）Agent 侧无重开路径：pause_monitor 只关不开、add_monitor 走通用链路必撞云端 self 防线 400（add route「已绑定为我的账号无需再加入对标监控」防线本身是对的——按对标再加是语义错位），宿主只能指路插件监控页手动点；修法=executeAddMonitor 在 wantMonitor 且 targetIsSelf 时先查云端 self 分段（fetchMonitorTargets("account",true) 按 platform+target_id/target_name 匹配）：paused→updateMonitorTargetStatusByKey active 重开（与插件监控页胶囊 Toggle 完全同链路）、active→幂等「自带监控本来就在运行中无需再加」、未匹配→fallthrough 通用链路防线兜底，回执三态 message（已重开「✅ 自带监控此前处于暂停态现已重新开启（云端盯盘+深度采集恢复，不占对标位与监控位）」/运行中/重开失败+插件出路），分支一 self 引导语同步补「若自带监控处于暂停态，对栗子说『栗子加监控+账号名』即可重新开启」——pause_monitor 关监控回执里「要重新开监控：对栗子说『栗子加监控+账号名』」这句指路从此对全场景成立（含我的账号）；②监控位 X 计数修正——用户实收「监控位 0/0」与表内「图解万物 ✅」矛盾根因=query_local_data accounts 库况行误传 fetchMonitorTargets("account",true)（云端 is_self=true 只返回 self 目标），在纯 self 集合里滤 !x.is_self 恒 0，而表内 ✅ 的 monitored 键集来自另一处 fetchMonitorTargets("account") 全量拉取（同函数两种调用参数不一致）；修法=库况行改全量拉取（不传 isSelf）一次三用全对（非 self active 计数=监控位 X+self 行组+失败省略段）；③破案附记（不改码仅记录）——free 用户「已开监控成功」链路真相：PATCH 点亮无权益墙是 ⭐282 故意设计（目标须保持 active 供本机扫描/自动采集引擎用），云端 cron 阶段0 对 free（slotCapOf=0）跳过不扫——free 点亮后本机引擎照跑、云端 24h cron 不盯，回执「云端 24h 盯盘启动」对 free 是过度承诺（产品口径待拍板）。SKILL 配套：流程 F 第 3 条补 self 场景回执三态口径（轻量完成行+回执一行即完，不进对标位括号体系不配四件套）。⭐R96cj 1.2.44→1.2.45：扫对标四板块对齐自查+池空降级话术钉死（⭐2026-10-28 用户实报「我发扫描对标，显示这个，是扫描对标还没开启能力吗？要求要跟扫描我的类似的」附实收「监控池通道这个版本还没开，直接走现场扫描 4 个对标账号，稍等——」「文件拿到，提取关键数据——」）：①池空降级说明只准用「本次为现场扫描（云端监控池没有数据——对标没开监控）」禁编「这个版本还没开/功能未上线」类版本概念话术（池查询通道一直开着，池空=对标没开监控非能力缺口）；②扫对标双路径交付统一四板块与「栗子扫我的号」自查同构（用户拍板）——现扫：完成行+板块一【对标账号】总表（粉丝/赞藏/近7天·命中，scan_delta 增量括号同自查）+板块二【最新动态】每号作品表（⚪ 近7天 0 条号也列「近 7 天 0 条更新」+7 天外高赞 TOP3 参考表，禁防刷屏省略）+板块三【命中详情】跨账号汇总（无命中一句 hit_rule 原文）+板块四【下一步行动】（命中给栗子研究/无命中给栗子加对标铺号）；池有料路径同构四板块（板块一照抄 by_account 池源无粉丝列不编）；旧【巡逻摘要】三列总览+「逐账号两行以内」碎片呈现退役，公共骨架 E 小标题组合同步改；③「文件拿到，提取关键数据」类过程旁白违反 ⭐R96ab 零过程旁白既有规，本批流程 E 重申不新增条款。⭐R96ci 1.2.43→1.2.44：监控三连报 SKILL 侧（⭐2026-10-28 用户实报三连——①「目前监控的上限和权益没显示出来」②「栗子对标第一组内容应该加小标题【我的&对标账号】另外监控栏为啥我的账号显示—（监控未激活）而其他显示为—？这个应该统一吧」③「目前不能加监控貌似？」——完成行「✅ 已开监控」与详情表「监控未激活」+独立警示行三处自相矛盾）：①加监控回执口径两态定版——点亮成功（cloudNote=「已开启云端监控」）完成行用「✅ 已开监控 ·「XX」· 平台（对标位 N/M）」；点亮失败（cloudNote=「云端监控未激活（原因）」）完成行用「✅ 对标已入库 · 云端监控未激活（{原因照抄}）」**禁报「已开监控」**（引擎 ADAPTER 1.2.98 add 后自动点亮 PATCH active 无权益墙，与插件监控页胶囊同链路等效用户手动点）；②对标库表（流程 F 四件套+第 5 条查对标库两处同款）——表上方加小标题 `【我的&对标账号】`（用户拍板命名）+库况行扩 `· 监控位 X/Y · 权益：Z`（message 照抄，回执无该段就不加禁自编——引擎 fetchMonitorTargets 一次三用非 self active 计数+getMonitorSlotsCap+planLabel）+监控列统一两态：监控中=`✅`、未激活（paused/从未开）=`—`——列内禁一切括注（「—（监控未激活）」退役，用户实报我的账号与其他账号两口径混显不统一），权益口径由库况行统一承载；③两样例表（四件套+查对标库）同步新款形态。⭐R96ch 1.2.42→1.2.43：扫我的号四板块+深扫 A3 线索挂钩（⭐2026-10-28 用户实报自查三连——a 拍板「表1【我的账号】和表1.5【增量对比】合并，增量括号展示（↑↓代表数字变化），均赞不需要展示；板块=【我的账号】【最新动态】【命中详情】【下一步行动】」b「深采各4条作品采到4条评论我很难理解？是否命中？不命中的是否也要深度采集？没有命中的命中详情是否要展示内容？」c「小米公司似乎不是最新的3条？02-16、09-28、05-19 看看是啥原因」——自查交付四板块定版：板块一【我的账号】合并总表（两表合一增量进括号正=↑N 负=↓N 0/缺失=裸值，均赞列彻底退役；表前 scan_delta 有才注「较上次扫描约 N 小时前」）+板块二【最新动态】（近7天作品表照抄 latest_notes；7 天外参考表帽行钉死「7 天外高赞 TOP3（按赞降序，非最新）」——引擎口径=近 7 天不足 3 条时从 7 天外按赞降序只补足到 3 条，是高赞优秀内容参考非最新作品、表序=赞降序非时间序，设计如此禁当 bug 报禁自作主张改时间序——破小米「不是最新的3条」疑）+板块三【命中详情】（独立板块：有命中时 status=hit 行跨账号汇总表；无命中不出空表只一句「本轮无命中（规则：hit_rule 原文照抄禁自算换算成具体数字）」——用户实报宿主把「点赞 ≥ 均赞×1.5」自算成「≥1000」口径漂移；深扫 A3 线索>0 补一行计数）+板块四【下一步行动】不变；完成行深扫照抄条款换新文案「深扫：N 条最新作品的评论区 · 采到 M 条 · A3 线索 X 条（🟢🟠🟡⚪）」（引擎 ADAPTER 1.2.97 deep_scan 增 a3 四级计数配套——「A3 线索 X 条」=评论侧命中答案，深扫不筛命中目的=给作品卡建 A3 快扫底座）；纪律六条 ④⑤ 更新（增量禁自编→括号版/hit_rule 原文照抄禁换算）；现扫路径深扫行与 hit_rule 口径同款同步；扫对标作品表条款引用从「自查第 4 件」改「自查板块二」+7 天外帽行同款）。⭐R96cg 1.2.41→1.2.42：我的号不占对标位定版（⭐2026-10-28 用户实报「栗子对标，我的账号也占用对标的位置，是否合理」+追问「我的小红书怎么变成对标了」——AskUserQuestion 拍板「我的号不占对标位」：引擎回执侧已把 self 记录从对标段 items 排除+对标位计数=真对标口径（全库-self，位满判定同口径），SKILL 侧推翻 R96cc/R96cb 双段拉锯——对标段=真对标不再出现「·我的」行、历史误入对标段的我的号已被引擎自动清出禁当 bug 报禁自作主张加回、我的号由 self_accounts 独立行组呈现不计位、扫我的号完成行带「我的账号——未占对标位」行时同款照抄禁报「已入对标库」；「·已在对标段 #N」呼应括注体系整体废止）。配套引擎 ADAPTER 1.2.96。⭐R96cf 1.2.40→1.2.41：现扫深扫行照抄（流程 E 现扫回执新增「深扫：N 条作品 · 采到 M 条评论」行——快扫即采评论与插件监控页「扫描规则」同心智同设置（deepComments 默认开监控页可关），宿主照抄进交付；回执无该行=用户已关或全已扫过，不追问）。⭐R96cd 1.2.39→1.2.40：现扫巡逻交付补作品表（⭐2026-10-27 用户实报「栗子扫描对标，没有作品信息呀」——现扫降级路径只有【巡逻摘要】总览表（动态+爆款一句话），更新的作品明细看不到；而「栗子扫我的号」自查路径有每账号【近7天作品】表——两路径同源引擎（capture_profile 回执都带 latest_notes），数据在手上只差列出来）：①流程 E 步骤 5 改两段交付——【巡逻摘要】总览表保留+其后新增有动静号【近7天作品】表（与自查第 4 件同款：帽行 `**@账号名（平台）** 近 7 天 X 条 · 命中 Y 条`+`|#|作品|发布|赞|命中|` ≤7 行照抄 latest_notes，status=hit 显 ✅ 否则显 —）；②只有 🟢 有爆款/🟠 有更新的号列表——⚪ 无动静号 7 天没发新作总览行+优秀参考已够禁列表刷屏；多号都有更新按总览表顺序逐号各一张；全部 ⚪ 时作品表整体省略不提；③池有料路径已有作品表不动，两路径交付结构对齐。纯 SKILL 批（ADAPTER 不动）。⭐R96cc 1.2.38→1.2.39：对标库表双段呼应定版 1.2.38→1.2.39：对标库表双段呼应定版（⭐2026-10-27 用户复测拍板「如果对标和我的都有，怎么办？对标就不显示？」——推翻 R96cb「同名行挪出对标段」归组：双重身份账号两个身份都要可见，且对标段 4 行与对标位 5/8 对不上账要靠括注脑补）：①对标序号段 items 全量编号 1-N——同名行（自己的号曾加对标，与 self_accounts 同 platform+账号名）照常占位编号+名字「·我的」后缀，对标位 N/M=对标段行数直接对账；②我的段全量隔离行，与 items 同名的行括注「·已在对标段 #N」（N=该行在对标段的编号，两段呼应；纯 self 行不括注）；③同一账号两处出现是刻意呼应禁当重复删行；④未登录/无 self_accounts 字段时我的段整组不列，items 同名行照常留对标段加「·我的」后缀（无呼应行）；⑤对标账号库表+查对标库表两处同改+两模板示例改双段呼应形态。纯 SKILL 批（ADAPTER 不动）。⭐R96cb 1.2.37→1.2.38：对标库表分组显示规 1.2.37→1.2.38：对标库表分组显示规（⭐2026-10-27 用户实报「对标和我的混淆显示，一个显示为 -、一个显示为 1 号」——自己的号曾加对标时 items 与 self_accounts 同名，同名行被编进对标序号段、纯 self 行又用隔离行，两个「我的」口径不一）：①对标账号库表+查对标库表统一分组规——items 与 self_accounts 同名（platform+账号名一致）的行挪出对标序号段并入「我的」段只显一行（括注「·占对标位」，对标位 N/M 计数含它，对标段行数+占位行数=N 对账）；②对标序号段只列纯对标重编 1-N，禁把「我的」账号编进序号段；③纯 self 行不占位不括注，paused 行监控列显 — 禁恒 ✅；④未登录/无 self_accounts 字段时我的段整组不列，items 同名行照常留对标段加「·我的」后缀。纯 SKILL 批（ADAPTER 不动）。配套⭐R96ca 1.2.36→1.2.37：栗子关监控开窗（⭐2026-10-27 用户实报宿主「小米公司取消监控这一项我这边做不了——探栗没有提供『关监控』的接口」+拍板现在开工）：①触发词家族加「栗子关监控/取消监控 + 账号名」（动作化注册词，与栗子加监控对称）；②监控三件套（加监控/删对标/扫对标）段落补关监控分流句——关监控走本技能调 leadsradar_pause_monitor（只停监控不删对标，账号留在对标库），禁再说做不了；③对标表监控列口径注释补一句「monitored 已改云端 status 真源（本地布尔仅未登录兜底）」。配套：引擎 pause_monitor 任务+对标列表 monitored 改云端 active 键集（治图解万物「云端 active/本地 false」误显）+mjs 工具 leadsradar_pause_monitor（⭐R96by 1.2.35→1.2.36：本地扫描类极简定稿（⭐2026-10-27 用户拍板「栗子本地扫描类的都不要快扫，本地扫描就是一个核心目的，看一下有没有最新命中或者其他优秀内容，不要冗余的分析」：①自查交付六件→极简四件——完成行→表1 总表（去快扫列，|#|账号|粉丝|近7天/命中|）→表1.5 增量对比（保留）→每账号【近7天作品】表 ≤7 行（快扫三行组/自查三问/节奏行/爆在哪/一句话结论全退役）；②纪律五条→六条——快扫全砍（列/三行组/字符条/均赞赞粉比爆款数行）+分析段全退役（只报事实：最新命中✅+优秀内容高赞+增量）+回执 account_scan/quick_scan 字段本地扫描不读不展示（引擎为流程 B 顺带算的）；③现扫第4条逐账号三行→两行（命中行+优秀内容 TOP1-2 点名，更新频率/节奏评述/爆在哪不发）；④巡逻摘要爆款信号列删「均值倍数·爆在哪」只留数据事实；⑤引擎配套 latest_notes 7 天外补足改按赞降序（优秀内容优先）） ⭐R96bx 1.2.34→1.2.35：自查交付以命中为核心重排（⭐2026-10-27 用户实报「要以命中为核心去展示，且要展示每个账号的7天最新作品的列表，以及命中、增量相关情况，继续跟插件的本地扫描的展示结果对齐」+实收宿主拿会话记忆自创「增量对比表」/「学什么避什么」「一句话结论」退役段回潮；引擎 capture_profile 已补 latest_notes（pickStripHits 同款：近7天在前/命中置顶/上限7条 status=hit/obs）+week_count/week_hit_count+hit_rule（与监控页命中规则同源，默认 点赞≥均赞×1.5）+scan_delta 增量快照；SKILL 自查交付六件定版：完成行→表1 总表（近7天/命中列）→表1.5 增量对比（scan_delta 有才出禁自编）→表2 块（快扫三行+【近7天作品】表≤7行命中✅+节奏行）→自查三问→下一步行动；纪律五条（增：增量禁自编+快扫三行禁压一行）；流程E 第4条扫对标命中口径同步同源） ⭐R96bw 1.2.33→1.2.34：「栗子领取」退役换「栗子报告」（⭐2026-10-27 用户拍板「栗子领取改为栗子报告是不是更好？直接查看所有最新的生成 7 条报告」——AskUserQuestion 定版「领取+列表合一」）：radar 侧三处改词——流程 B-深 pending 领取行/流程 E 现扫领取行/深采 error 段的「栗子领取」全换「栗子报告」（语义=喊栗子报告拿报告，与 insights 同批全局改名 agent-tasks/index/connector 共 13 处引擎文案+mjs 20 处同步）；「栗子报告」合一入口语义见 claim_pending_result description（先领 pending 最新一份，无 pending 列 query_local_data(reports) 最近 ≤7 条一览）。⭐R96bv 1.2.32→1.2.33：扫描量可调开窗批 radar 侧两处（⭐2026-10-27 用户拍板「开窗也直接做了。扫描对标也一并调整了吧」——R96bu 预告的下批引擎开窗提前到本批执行）：①流程 E 现扫逐个采集 capture_profile(url, limit=30~50) 补「用户指定扫描量时按用户值传 limit（引擎白名单 1-300），默认 30-50 不动」——扫对标/扫我的号现扫路径同步生效；②流程 B-深 深采发起补参数口径（limit=深采条数 1-50 默认 20/comments_limit 每篇评论 10-100 默认 50，用户主动指定才透传默认不传）。引擎批：agent-tasks.ts executeTrackDeep 开窗三参数 sample_count 20-120/top_deep 5-30/comment_limit 10-100（track_deep 工具 inputSchema+dispatch 同步注册，本工具侧 radar 场景透传 limit 即可）。⭐R96bt 1.2.31→1.2.32：扫我的号自查交付两张表定版（⭐2026-10-27 用户实报两问——问1「你这个用的是我们插件本地扫描功能吗？怎么看起来不像」取证答疑：是——capture_profile 引擎真采+account_scan 快扫与插件监控页 classifyAccount 同源同引擎 source="plugin_classify_account"，连「推测·基于N条」都是引擎 basis 字段原文（surface-diagnose sourceLabel）插件端同款标注；问2「输出也跟之前说的不对，应该显示我的账号列表一个表格，命中之类的」实锤：R96br 咨询 6 拍板「两张表+命中✅+最多7条」当时只落了巡逻池路径，自查现扫路径漏定版——宿主自由发挥成逐账号大段块【账号详情两列表+快扫+TOP5+学什么避什么】无总览表、【自查三问】扩成三大段）：流程 E 尾「看我的号」一句话扩成自查交付定版——结构五件顺序固定先总后分：①完成行（耗时/号数/条数/名单来源云端+⚠️位满提示照抄追加）；②表1【我的账号】总表 |#|账号（平台）|粉丝|快扫|扫描| 每号一行（快扫列 icon+label 引擎没算显—禁自算；扫描列 ✅N条/⚠️原因；监控中括注）；③表2 逐账号紧凑块（快扫行组三行照抄 account_scan：icon+label+advice／流量分·线索分 20 格字符条+分数／均赞·赞粉比·爆款数 → 爆款命中表 ≤5 行 → 节奏一行；作品表一律 ≤7 行）；④【自查三问】自创段转正定版（爆款哪篇/节奏稳不稳/对标差在哪，各 ≤2 行只引真实数据，无横比数据就说本轮不横比）；⑤【下一步行动】2 句；纪律三条：「学什么/避什么」双段退役（学什么并入爆款表尾 1 行 ≤20 字）/快扫分数分类字符条全照抄回执禁自算/【账号详情】两列表退役。纯 SKILL 批零引擎改动，ADAPTER 不动。⭐R96br 1.2.30→1.2.31：名单来源统一+巡逻命中换 ✅（⭐2026-10-27 用户咨询「两个的名单来源不一样？为啥不保持一致？选择可靠的名单？不应该都在云端有保存吗？（包括目前的栗子对标，读取的名单不应该也都在云端吗？）栗子扫对标 vs 栗子扫我的」+「命中如何标注？✅️的emoji?」——AskUserQuestion 拍板「统一云端优先」+「两张表+命中换 ✅」）：①「栗子扫我的号」双层定位——先 query_local_data(source="accounts") 查回执 self_accounts（云端我的账号分段，引擎 ⭐R96br 已补透 url 主页链接字段），有带 url 的号直接扫（有几个扫几个，完成行注明「名单来源：云端我的账号 N 个」），未登录/名单空/行没 url 才要主页链接（同会话沿用不重复要）——与扫对标「先查池」同构，名单来源口径两端统一（云端真源=lf_monitor_targets self 分段）；②巡逻命中标注 🎯→✅——流程 E 池里有料段 status=hit 的行加 ✅ 前缀，与对标库表监控列 ✅ 同族（🎯 退役）。配套引擎 ADAPTER 1.2.87（self_accounts 透 url+account_deep 账号深度研究开窗，本批为引擎批须重载插件）。生效前提=重载浏览器插件+npm 发版+宿主经 leadsradar_get_latest_skills 更新 SKILL.md+完全退出宿主重开。⭐R96bq 1.2.29→1.2.30：自查注册词补宾语（⭐2026-10-26 用户咨询「栗子扫对标和栗子扫我的要不要分两个提示词/合二为一/名字能否优化」——AskUserQuestion 三拍板：①维持两词不合——意图歧义大且名单来源不同（扫对标读对标库/监控池零追问直达，扫我的本地不存用户账号首次必须要主页链接，合并成一个词退化成「扫谁」追问；管线本就流程 E 共享无重复维护成本）；②主词改「栗子扫我的号」——「我的」后缺宾语口语悬空，补宾语与「栗子扫对标」对仗；③研究类交付补行动区见 insights 2.3.3 同批）：frontmatter description/分流表自查行/流程 E 注册词行/确认交互行四处换词——「栗子扫我的号」为主注册词、旧词「栗子扫我的」同认不退役、自然语「看我的号/看看我的号」照旧。纯 SKILL 批次零引擎改动，生效前提=npm 发版+宿主经 leadsradar_get_latest_skills 更新 SKILL.md+完全退出宿主重开。⭐R96bo 1.2.28→1.2.29：深度探一下开窗+扫对标近7天口径（⭐2026-10-26 用户实报两条——「栗子研究 小红书 辅食」宿主只给轻量速览+编造预估分「要调用插件的账号深度采集，按钮就是叫这个名字，我要调用的是我插件的能力，不是让你临时搞些没用的」+「目前的扫描也是不对，没有最新的7天更新或者最新7条的展示」）：①流程 B-深开窗——注册词「深度探一下 <账号链接>」/「深度采集这个号」/「深挖这个号」→ capture_profile(url, deep:true[, limit 1~50 默认 20, comments_limit 10~100 默认 50])，与插件账号 Tab「深度采集」按钮同源同引擎（content deepCapture 协议：逐条详情+评论+A3 快扫+四分类深采修正版+近7天最新作品），5-20 分钟异步闭环 pending→「栗子报告」claim_pending_result（交付=完成行耗时/详情成功数/评论总数+【账号快扫】帽行两维分+A3 快控行+近7天最新作品表+学什么避什么；DEEP_PROFILE_FAILED/LOGIN_REQUIRED/COLLECT_BUSY 分类转述；pending 期间追问如实说还在采禁编阶段；快扫四档/两维分/线索率照抄回执禁编；采集互斥同会话等上一号领完再启）；输入分流表+职能语（深度采集/深挖这个号）+requires（leadsradar_claim_pending_result）三处落位；②流程 E 先查池再现扫——巡逻第一跳 query_local_data(source="monitor")（云端 lf_monitor_targets+lf_monitor_hits 与插件监控页同源，引擎已按插件折叠栏 pickStripHits 同款口径排好：近7天优先→命中置顶→时间降序上限 7 条，回执带 monitor_stats{targets_total,week_count,hit_count,by_account}+data 各条 in_week/status 标记）：池里有料直接交付「监控巡逻速报」不现扫（省额度秒回：完成行监控池 N 条·近7天 X 条·命中 Y 条+【巡逻摘要】by_account 分组表+近7天最新作品表 status=hit 行加 🎯；LOGIN_REQUIRED 转述栗子登录），池空/未开监控降级现扫原 1-5 步并注明「云端监控池没有数据本次为现场扫描」；「现扫现报定位」改双层定位+「暂无 Agent 查询通道」退役。配套引擎 ADAPTER 1.2.85（executeDeepProfile 深采引擎+query_local_data monitor 源+capture_profile deep 参数——引擎+SKILL 混合批次须重载插件）。生效前提=重载浏览器插件+npm 发版+宿主经 leadsradar_get_latest_skills 更新 SKILL.md+完全退出宿主重开。⭐R96bn 1.2.27→1.2.28：我的账号行组 paused 丢行根修（⭐2026-10-26 用户复测删对标通过后实报「我的账号，还有一个怎么不见了，我的小红书账号？」——删对标交付【对标账号库】表只列小米公司一条「我的」行，肖予暄（小红书·paused·0 粉）整行消失；引擎侧 agent-tasks self_accounts selfList.map 全量映射无过滤（status:"paused" 原样透出，肖予暄必在回执里）非引擎 bug，根因=SKILL 两处规则缺口——流程 F 第 4 条与第 5 条写死「我的账号自带云端监控恒 ✅」，宿主按模板没法给 paused 填 ✅ 就把整行丢弃）：①两处「恒 ✅」改按回执 status 映射——active 显 ✅、paused 显 —、空/其他显 —，paused 行可括注「监控未激活」；②钉死全量列出纪律——回执 self_accounts 有几行列几行，禁因 paused/粉丝 0 丢任何行（宁缺毋滥只管无字段整组不列，不管组内行丢弃）；③两处模板示例表各补一行 paused 形态「我的」行（`| — | 小栗同学（小红书·我的）| 粉丝 0 | — |`）教宿主两种形态。纯 SKILL 批次零引擎改动，生效前提=npm 发版+宿主经 leadsradar_get_latest_skills 更新 SKILL.md+完全退出宿主重开。⭐R96bj 1.2.26→1.2.27：删对标开窗+粉丝缺失三源反查（⭐2026-10-26 用户复测 R96bi 交付实报两条——反馈1「为什么有的没展示粉丝量呢？」附栗子监控交付表三处「粉丝 —」（梓悦爸爸做辅食/肖予暄·我的/小米公司·我的）；反馈2「删除对标的能力还没开窗？」附宿主自述「探栗给我的能力只有采集、查库、加对标开监控，账号删除是插件监控页的手动操作，没有删除接口」）：①流程 F 触发段补「栗子删对标 <账号名/链接>」「删对标」「腾对标位」（⭐R96bj 开窗）→走第 6 条删除路径；②第 6 条删对标路径新增——leadsradar_remove_benchmark(url 或 name，重名带 platform)，破坏性操作必须先确认（把账号名+平台+粉丝数+是否监控中报给用户确认一句，用户指令已点名且语义明确也不跳过确认，批量删除逐个确认逐个删），回执 message 照抄，ACCOUNT_NOT_FOUND 先查对标库核对账号名，删除交付轻量（完成行 `🗑️ 已删对标 ·「XX」· 平台（对标位 N/M）`+云端说明一行+【下一步行动】两选项（`栗子加对标 <新主页链接>` 加新号/查对标库核对剩余名单）+收尾语「删旧腾位，接着铺 🔍」）；③超限场景首项三处升级——流程 F【对标账号库】表下删除指引退役+【下一步行动】首项从「插件对标页删旧腾位（Agent 通道暂不支持删号）」改 `栗子删对标 <表里账号名>`（Agent 直接删：本地库+云端对标+本机监控三处同删），第 5 条查对标库超限口径同步；④纪律行改写——一次最多操作一个账号、批量对标/删除逐个来（删除逐个确认）、删对标走第 6 条三处同删、监控暂停/恢复仍指路插件监控页只读边界。配套引擎 ADAPTER 1.2.81（executeRemoveBenchmark 三处同删+粉丝三源反查自愈回写+self_accounts 反查兜底）。⭐R96bi 1.2.25→1.2.26：【对标账号库】四件套+栗子监控无上下文兜底+我的账号并入+监控=云端口径（⭐2026-10-26 用户实测反馈2「加入对标的，如果满了应该列举全部的对标对象，方便用户进行删除操作——增加一个【对标账号库】表格方式呈现，在下一步行动之前；如果单独发送栗子对标栗子监控，没有上下文的情况下，则也会呈现全部对标账号库的信息，包括我的账号」+反馈4「目前监控不存在本机监控中的监控，监控=云端监控，这类表述有误（本机监控中·云端 24h 未激活）」）：①流程 F 对标交付三件套升四件套——【对标账号库】全量表恒追加（不限超限场景），位置在【账号详情】后【下一步行动】前，`|#|账号（平台）|基础数据|监控|` 四列与第 5 条查对标库同款（monitored=true 显 ✅ 否则 —；>8 行照列不截断），数据=query_local_data(source="accounts", limit=200) 追加调用；回执带 self_accounts 字段时表末追加「我的账号」行组（每行 `| — | 账号名（平台·我的）| 粉丝 X | ✅ |`，我的账号自带云端监控恒 ✅；未登录/无字段整组不列不提宁缺毋滥）；超限场景（对标位 N>M）本表即删除操作依据——表下加删除指引「删旧腾位：插件 → 监控页（对标分段）→ 卡片右上删除」+【下一步行动】首项改 `插件对标页删旧腾位 ← 表里挑一个删`（Agent 通道暂不支持删号，删除在插件完成）；②「栗子监控」无链接无上下文兜底=查对标库全量呈现（含我的账号）——触发词总表+流程 F 触发段并列补；③第 5 条查对标库同步补 self_accounts 行组+超限场景下一步行动改写（首项=插件对标页删旧腾位+表下删除指引）；④监控=云端口径（用户拍板「不存在本机监控的说法」）——步骤 3 落规回执照抄「监控未激活（云端 24h 盯盘为会员权益）——在插件监控页点亮该账号胶囊可激活」/「已开启云端监控」，禁出现「本机监控」字样（R96bg「本机监控免费已开」权益口径整体退役——用户实报宿主压缩成「本机监控中·云端 24h 未激活」像已在监控、表述有误）；模板示例【账号详情】与【下一步行动】之间插入【对标账号库】表（含我的账号示例行）。配套引擎 ADAPTER 1.2.80（cloudNote 两分支重写+accounts 源 self_accounts 透出）。⭐R96bh 1.2.24→1.2.25：线索快扫措辞钉死（⭐2026-10-26 用户实测反馈3「小红书图文测试，怎么显示了多余的文字，且表述不一样？」——实报宿主三宗罪：plaintext 围栏孤行泄漏+标签改写「客户线索指数/内容流量指数」+帽行自创前缀「🧭 一眼判断：」并拼 A3 档位词「客资肥沃」）：①帽行三件外零附加——禁加「🧭 一眼判断：」类自创前缀、禁把 A3 率档位词（线索富矿/客资肥沃/线索可挖）拼进帽行，A3 率归统计行括注、帽行只管双轴四分类；②双指数条措辞照抄钉死——两行标签只用「流量」「线索」两词（禁「客户线索指数/内容流量指数」等改写）、流量行在前顺序不变、字符条一律普通文本行直接输出禁包三反引号代码围栏（plaintext/text 等围栏语言标记会被部分宿主渲染泄漏成「plaintext」孤行文字）；③模板区帽行乱码修复（💎 双高型）。配套引擎 ADAPTER 1.2.79（douyin.ts 互动数 document 级唯一性兜底，抖音图文四分类透出的数据前提）。⭐R96bg 1.2.23→1.2.24：对标与账号速览三修（⭐2026-10-26 用户实测反馈三条——①「学什么和避什么回行展示，不要挤在一起」②「这个对标位置12/8?超出上限了还能添加？」③「开监控是否考虑到我的权益？我这账号貌似没权益啊」）：①**学什么/避什么分行**——流程 B 结论铁律两短句各占一行 `- ` 列表项（与赛道总览 R96ae 分行铁律同规：markdown 单换行必合并挤成一行，列表项宿主漏空行也各自成行），模板示例同步改两行；②**对标位超限警示**——流程 F 步骤2补超限存量口径（回执带「⚠️ 对标位已超限 N/M（历史存量）」照抄——存量账号在库可用但新号已加不进，R96ap 位满闸门拦新不删旧）+完成行超限场景（照常 N/M+警示句另起一行，禁把已入库改报失败）+查对标库库况行 N>M 追加警示；③**开监控权益口径说清**——步骤3补「开监控交付必含一句『本机监控免费已开（浏览器开着时自动巡逻）；云端 24h 盯盘是会员权益未激活』」（本机/云端是两个东西，只说未激活不说免费已开会让用户误以为开了不该开的权益）。配套引擎 ADAPTER 1.2.78（add_monitor 两分支+查对标库 accounts 源超限警示+cloudNote 权益口径四改）。⭐R96bf 1.2.22→1.2.23：下一步行动存选题升位（⭐2026-10-26 用户实测反馈1「探一下 小红书视频通过，小瑕疵，下一步行动第一推荐应该是存选题」）：流程 A【下一步行动】岔口改版——**栗子存选题升默认首位**（`栗子存选题` ← 好内容先进弹药库）+「栗子研究」次位（看完快扫最自然的下一步是先进弹药库）；**加对标退役出 A 岔口前 2**（用户真要再说）；唯一保留的岔口=自己的作品或 A3 信号强（A3 率 ≥30% 或 🟢≥5 条）→「栗子触达」首位+「栗子研究」次位不变；模板示例同步（存选题/研究两句）。纯 SKILL 批次零引擎改动。⭐R96be 1.2.21→1.2.22：账号快扫两处去重（⭐2026-10-26 用户复测 R96bd 后实报三问题：①「账号快扫，展示还是不太对，这俩都没按照规划的方式呈现，你看看探一下关键词是为啥可以做到」——用户实测【账号快扫】仍是「依据/最爆/建议」旧三行骨架且帽行带「· 不建议对标」尾巴，根因诊断=引擎字段是新的（实测依据行已出现「流量分 57 · 线索分 40」证明 traffic_score/lead_score 已透出）但宿主技能页 SKILL 还是旧版（1.2.19 及更早格式）——「探一下<关键词>」赛道总览能成是因其字符条格式规则在旧版技能页就有；②「这个应该加入学什么里面去展示，目前也是比较重复的：最爆：…」；③「这个也有点重复了，· 不建议对标；建议：不建议对标」）：①**最爆行退役并进「学什么」首句**——列表块第四行「最爆：标题截 10 字+👍数+均值倍数+爆在哪」删除，学什么首句=爆款点名（标题截 10 字+👍N+对近期均值倍数 1 位小数+爆在哪半句）后续短句再补什么内容在吃流量，各 ≤40 字（原 ≤30）；②**帽行禁拼行动词尾巴**——帽行=`{icon} {label}（{basis}）`三件外再无其他，「重点对标/不建议对标」类行动词只在建议行 advice 原文出现一次；③列表块四行砍三行（流量分/线索分/三大数据）；④旧插件兜底 emoji 查表改**纯 emoji 表**（monetization=💎/marketing=🎯/traffic=🚀/lowvalue=💤，只查 emoji 不拼行动词）+「只出帽行+建议行」。纯 SKILL 批次零引擎改动，生效前提=宿主经 leadsradar_get_latest_skills 更新 SKILL.md+完全退出宿主重开（无需重载浏览器插件）。⭐R96bd 1.2.20→1.2.21：单篇快扫四分类帽行+双指数条（⭐2026-10-26 用户指认「单篇快扫也是有四类Emoji类型的呀！你在研究下单篇快扫还有哪些，是否需要展示」——研究实锤插件端单篇快扫卡本就有与账号四分类同族同源的双轴四分类（CommentScanView calcTrafficIndex×calcNoteLeadIndex→classifyNoteQuadrant：💎双高/🚀流量/🎯线索/💤双低），引擎 quick_scan 一直没透出宿主说不了「这篇是💎双高型」；AskUserQuestion 拍板「四分类为主+A3率并入统计行」「双指数20格字符条」）：①流程 A【线索快扫】帽行升级四分类 `{icon} {label} · 流量 N / 线索 N`（quadrant_icon/quadrant_label/traffic_index/lead_index 照抄禁编）+帽行紧跟双指数 20 格字符条两行 `- 流量 █░×20`/`- 线索 █░×20`（与账号快扫两维评分条同款算法，不带数字尾巴——帽行已有分数）；②A3 率四档自帽行降级并入统计行括注 `N%（🟠 线索可挖）`（R96bc 帽行体系退役为兜底）；③无 quadrant 字段兜底（旧插件/AI 跳过 note_detail 反查不中）：帽行退回 R96bc A3 率四档、双指数条省略——步骤 1/3 落规「先 note_detail 再 capture_note_comments 的固定顺序就是为让 quadrant 命中，跳步=自己丢四分类」。配套引擎 ADAPTER 1.2.75（详见其注释）。⭐R96bc 1.2.19→1.2.20：账号快扫学赛道总览+单篇快扫同理（⭐2026-10-26 用户复测 R96bb 后实报「目前还是不太对，没有展示两维评分，也没展示三大数据，学一下探一下<关键词>的赛道速览的表达方式，另外4类的EMOJI也再策划设计下（探一下单篇的快扫同理）」）：①流程 B【账号快扫】学赛道总览逐段同构——判定帽行 `{icon} {label}（{basis}）` 独立段（对位「🔵 蓝海词（预估）」）+ `- ` 列表块四行：流量分/线索分 20 格字符条（对位需求分/竞争分，两维即四分类依据：流量≥60 且线索≥72=双高型）+三大数据行「均赞 N · 赞粉比 N% · 爆款 N/M」（对位「集中度·均赞·最爆」）+最爆行（爆款点名解读保留）+建议行 `→ {advice}` 独立段（对位「→ 建议立即切入——」）；旧「依据/最爆/建议」三行列表块退役（basis 挪帽行括注）；②四类 emoji 对齐插件端 surface-diagnose CATEGORY_MAP 定版：💎双高型/🎯线索型/🚀流量型/💤双低型（全端同源；旧版帽行写死 🎯 与线索型专属 emoji 撞车）；③流程 A【线索快扫】同理——加判定帽行 `{档位emoji} {判定词}（A3 率 N%）`（≥30%=🟢线索富矿 / 10~29%=🟠线索可挖 / 3~9%=🟡线索偏薄 / <3%=⚪噪音为主，A3 率照抄禁编）+A3 统计行 A3 率画 20 格字符条（与赛道总览分数条同款算法）；④旧插件兜底：account_scan 无 traffic_score 字段时分数条两行+三大数据行整行省略不编。配套引擎 agent-tasks.ts account_scan 透出 icon/traffic_score/lead_score/avg_likes/like_follower_ratio/hit_count（详见 ADAPTER_VERSION 1.2.74 注释）——需重载插件生效。⭐R96az 1.2.18→1.2.19：账号展示「基础数据」并一行+全端账号结构同构（⭐2026-10-26 用户反馈「这个也展示在一行，改为基础数据：粉丝6.2万、赞藏30.3万」「注意抖音平台也要适配，抖音是点赞吧」「其他的账号也按照类似结构来」）：①流程 B【账号详情】紧凑四行版——粉丝/赞藏两行并成「基础数据」一行 `| 基础数据 | 粉丝 6.2万、赞藏 30.3万 |`（顿号分隔；标签随平台：小红书=赞藏、抖音=获赞（抖音主页官方口径叫获赞，全端统一标准同款）；哪项有值写哪项、全无省整行禁编），模板同步；②「其他账号同构」三处——流程 F 对标交付表紧凑五行版（账号名（平台）并一行+基础数据并一行+对标监控合并行 `已入库 ✅（未开监控）`/`（监控中）`，旧八行：账号/平台/定位/粉丝/获赞/更新节奏/监控/对标）、查对标库清单表四列 `|#|账号（平台）|基础数据|监控|`（旧五列平台/粉丝并拢）、C1 代表账号 TOP5 五列变体 `|#|账号|命中|基础数据|总赞|`（粉丝/赞藏并一列缺项省略）；③纯 SKILL 展示层改版零引擎改动（数据链 R96ay 已修常态有值）。⭐R96ay 1.2.17→1.2.18：账号速报三改（⭐2026-10-26 用户实测「探一下账号」三反馈）：①【账号详情】紧凑五行版——账号名+平台并一行「陆婷LT（小红书）」（用户拍板「账号名和平台可以展示在一行，名字（平台）这样的，避免账号详情太长」）+对标监控合并行 `| 对标 | 已对标 ✅（未监控） |`（用户拍板「对标和监控合并为一个，监控采用括号的形式展示，如已对标√（未监控）」，monitored=true 括「监控中」、false 括「未监控」、无 account_stats 括号省略只写「已对标 ✅」），平台/监控独立行退役旧七行砍成五行；②过程插曲零叙述+收尾禁令全流程化——公共骨架收尾条加两条硬禁令：收尾交付语即全文最后一行之后一个字都不能有（自流程 A 模板纪律上移通用化，用户实报流程 B 收尾语后又跟「账号速报已交付：@XX 是…爆款是…」整段收尾重复）、连接闪断重连/重开浏览器窗口等运行细节一律不进交付文案（用户实报「（小插曲：探之前插件连接闪断了一次，我按指引重开了装插件的浏览器窗口已恢复…）」整段多余——异常仅在实际影响交付物缺失时 ⚠️ 一句）；③引擎侧三修配套（详见 ADAPTER_VERSION 1.2.70 注释）——scratch tab 时序空壳根治后粉丝/赞藏常态有值、account_scan 四分类（双高型/流量型/线索型/双低型）常态返回，【账号快扫】板块随之常态出（用户反馈2 澄清「双低型、线索性、流量型这类」即指账号四分类结论）。⭐R96ax 1.2.16→1.2.17：速报过程文案瘦身（⭐2026-10-26 用户拍板「这类文案有点多余，包括复核什么的，这些过程不要过度展示；这个过程消息也可以不要」）：①复核静默化——流程 A 第 3 步复核动作保留但「复核过程零展示」落规（增减静默并入四宫格计数，A3 统计行/收尾禁「已人工复核样本：X 条误报降档、Y 条升入 🟢」类过程自述）；②A3 统计行收尾硬化——以「插件规则引擎判定（词库可解释，非 AI 评分）」收尾其后禁接复核尾巴；③模板纪律加「收尾交付语即全文最后一行，之后一个字都不能有」——用户实报收尾语后又跟「线索速报已交付：快扫 200 条评论…最值钱的发现…建议下一步…」整段总结复述（三重冗余：计数四宫格已给/发现解读段已给/建议行动区已给），与创作栗 R96ac「指引行后零输出」同规。同批引擎修复 ⭐R96aw 小红书视频封面零落盘（详见 ADAPTER_VERSION 1.2.69 注释）。⭐R96au 1.2.15→1.2.16：流程 A 速报评论表格化+四宫格重排（⭐2026-10-25 用户指令「评论数据改用表格形式展示A3和A2」「评论区需求总结压缩到一段放在A3评论后面」「【评论展示】展示具体评论、A3还有点赞量」「【线索快扫】包括四宫格、A3统计和评论区解读」+数量策略「优先展示A3和A2，数量太少或太多要有折叠机制/展示的上限」）：①【评论数据】栏目退役→【评论展示】——具体评论三列表 `| 档位 | 评论 | 👍 |`，行序 🟢→🟠→🟡 档内按 👍 降序，🟢 行带序号（1.=最优先跟，跟单名单进表格——推翻 R96k「跟单名单不进表格」旧规，公共骨架表格规则同步开例外口）、🟠🟡 例句不带序号、⚪ 不进表、无 👍 显「—」；②展示上限（太多防刷屏）：🟢 ≤5/🟠 ≤3/🟡 ≤2 超出按 👍 截断，全量在插件面板四宫格计数对账；下限（太少防虚胖）：档内不足照实全列不凑数，A3（强+弱）合计 <3 条表后加「A3 样本薄（N 条），以下判断供参考」不引导扩扫；③【线索快扫】重构三件套顺序固定——四宫格表（四档计数表从旧【评论数据】挪入，quick_scan 照抄+🟢 计数加粗）+A3 统计行（A3 率+判定话术+透明化溯源）+评论区解读一段（≤3 句放 A3 评论与统计之后，收编旧「信号点评」职责）；④旧温度计字符条+分档例句散列退役（分布归四宫格表、例句进【评论展示】表）；⑤模板示例换用户实测马尔代夫案例，小标题组合行/模板纪律同步。⭐R96as 1.2.14→1.2.15：触发词动作化（⭐2026-10-25 AskUserQuestion 用户定版五注册词「栗子存选题、栗子加对标、栗子扫对标、栗子加监控、栗子扫我的」——动词+对象自明，旧词栗子入库/栗子对标保留兼容仍认、报到菜单展示新词）：①分流表三行落注册词——「栗子扫对标/扫一遍对标/谁更新了」=巡逻（流程 E）、「栗子扫我的/看我的号」=自查（流程 E 自查视角）、「栗子加对标 <主页链接>」/「栗子加监控」=对标管理（流程 F）；②流程 E 定名单+确认交互落规——给了链接/名单直接用、点名扫「栗子扫对标 @某某」只扫指定号、没给则 query_local_data(source=accounts) 读对标库，名单 ≤5 个号默认全量直接开扫（每号占采集额度 1 次）、>5 个号先确认「对标库 N 个号，全扫约 X 秒 · 占 N 档采集额度——全扫还是点名几个？」，「栗子扫我的」本地不存用户平台账号→首次要主页链接同会话沿用；③流程 F 标题+触发段换注册词；④四岔口/流程 B/C1 下一步行动等 9 处旧词替换。⭐R96aq 1.2.13→1.2.14：账号数据双修+对标交付三改（⭐2026-10-25 用户实测「探一下 小红书@陆婷LT」+「栗子对标 @陆婷LT」五反馈）：①账号级数据双根因修复——两平台列表采集 note 恒不带 follower_count/total_likes（引擎四分类取 notes 粉丝恒 0→account_scan 恒跳过+【账号详情】恒无粉丝行，用户实报「账号详情没有粉丝量和赞藏」「账号快扫还没有」），content 两侧挂头部指标（小红书 collectXHSAccountNotes 从 acctState.fans/interaction 解析、抖音 collectDouyinAccountNotes 读 user-info-fans/user-info-like+label 兜底），引擎 profile_posts 回执新增 account_stats{followers,totalLikes,noteCount,monitored}（monitored 查对标库 URL 归一匹配，旧库记录重采一次自愈）；②【账号详情】表全端加状态维度（用户拍板「是否加监控、是否加对标要成为这个账号详情表格中的一个状态维度。但是后面就不要再显示了」）——流程 B/F 表格统一 +`| 监控 | 未开/已开 ✅ |`+`| 对标 | 已入库 ✅ |`（位满例外「位满未入 ⚠️」），散文监控行全退役（旧插件无 account_stats 省监控行）；③【一眼结论】散文板块退役→【账号快扫】挪位扩行（用户拍板「账号快扫还没有，格式模仿赛道总览，替换掉这个板块；学什么和避什么不错保留在账号分析后面」）——快扫从【账号详情】后挪到【作品数据】后（原一眼结论位），列表块两行扩三行：依据（basis 照抄）/最爆（爆款数据收编：标题截 10 字+👍数+对近期均值倍数 1 位小数+「爆在哪」半句）/建议（advice 照抄），学什么/避什么两短句紧随其后不带【】小标题；④对标完成行合并确认行（用户实报「✅ 完成 · 已入对标库」与「✅ 已入对标库」两行重复）——`🌰 **情报栗**：✅ 已入对标库 ·「XX」· 平台（对标位 N/M）——` 单行带确认，已开态「监控：已开 ✅」状态散文行退役（状态进表，行动区只留行动）。配套引擎 content×2+agent-tasks×1，需重载浏览器插件生效。⭐R96ap 1.2.12→1.2.13：对标三改（①对标场景专用收尾语「对标入库，接着铺 🔍」——用户判「情报到手，接着挖」的「挖」是线索语境对标不贴切，通用版仅用于采集流程 A/B/C1/E；②查对标库开窗——不带链接的「栗子对标/查对标库/谁在监控中」→ query_local_data(source=accounts, limit=200)，交付=库况行（对标库 N 个账号 · 对标位 N/M，引擎 accounts 源回执 message 附送）+|#|账号|平台|粉丝|监控|清单表（monitored 列即监控名单不另开）+下一步行动两选项；③对标位满撞墙落地——引擎 capture_profile 位满预判照采不入库（新账号 records>=cap 时跳过入库，message ⚠️ 明说「未入对标库+删旧/升级出路」），SKILL 落规禁报「已入对标库」——根因：位满唯一硬闸本是服务端 400 仅面板链路有，Agent 通道云端上传静默吞错+本地入库无闸，位满 8/8 照样报成功且本地超 cap 显示 9/8）。⭐R96ao 1.2.11→1.2.12：对标交付三改（①【账号详情】补粉丝/获赞行——插件端 add_monitor 回执新增 data{followerCount,totalLikes,noteCount,benchmark{count,cap}}，宿主双源取回执优先；②确认行尾缀（对标位 N/M）——用户拍板「可加对标的上限要展示」，N=已用 M=上限从回执 benchmark 抄，旧插件无回执不带括注；③散文监控行退役并入【下一步行动】编号短句行——未开→1.开监控 2.探一下，已开→状态行+1.探一下 2.栗子对标）。⭐R96al 对标交付轻量化（⭐2026-10-24 用户实测「栗子对标 我是十四哦」三反馈：①对标是入库不是采集——流程 F 禁复用流程 B 整套采集交付（用户原话「加入对标要不要也发这么多内容？又是分析又是那个感觉像采集一样」——【作品数据】20 条表/【一眼结论】/学什么避什么/【下一步行动】四样都不发），对标交付=确认行+【账号详情】表+监控行三件套；②确认行主体=账号本身 `✅ 已入对标库 ·「我是十四哦」· 抖音`——消歧「近 20 条加入对标库」误读（用户原话「这个到底是啥意思啊？不是把这个账号加到我的对标吗？」——入库的是账号，20 条只是采集顺带的数据，作品条数不进确认行）；③【账号详情】两列表直接内联进流程 F 防走样（用户实报对标路径宿主仍写一行长文本——流程 B 定版格式在 F 路径强度不够，F 内自带格式+模板）+新增定位行（从作品标题一句话提炼 ≤10 字，对标者最关心「这是个什么号」）+对标场景去「默认采了最近 20 条」括注（条数是内部参数非交付信息）；④对标完主推开监控（用户问「对标完了…任务应该是什么你觉得？」——入库是静态、监控才是持续学：未开则「说『开监控』让它一更新就知道」）+句尾轻指路「探一下 <主页链接>」看作品数据——账号速览全套在探一下那边，对标交付不预支；账号深度研究不主动推（会员权益+批量对标场景逐个推研究太贵），原步骤 4「顺手价值·account_scan 四分类连着说」随轻量化退役）。⭐R96ag 账号速览 B 流程四改（⭐2026-10-24 用户实测抖音「李子柒」账号采集四反馈）：①【账号详情】一行长文本→两列标签表（学【作品详情】同款全端统一——账号/平台/粉丝/赞藏/更新节奏各占一行，数据没有不列行禁编）；②快采口径——profile 列表快采默认只带回 👍 是设计预期，三列表 `|#|标题|👍赞|` 即正常形态，禁「评论/收藏数这次没采到」「先给 👍 口径」类意外表述（用户原话「如果是意料之中的，不应该说是本次没有采到，不然给人感觉好像是出了意外」；用户要评/藏时说明需逐条深度采集）；③账号快扫接入——返回带 account_scan 就出【账号快扫】独立栏目（格式学赛道总览：判定词组帽行 `🎯 双高型 · 重点对标` + `- ` 列表块依据/建议两行照抄 basis/advice；无 account_scan 不出也不提——插件侧列表卡没带回粉丝数自动跳过四分类是常态非意外）；④【下一步行动】全端去链接（用户原话「不要等我测试一个一个改呀，其他的下一步行动都直接改一下」——A/B/C1 模板+四岔口+触达句共 7 处链接占位全清，指令只写指令词，同会话回喊默认取最近交付对象，与创作栗同规）+顺手补开工语/完成行/区块/收尾语空行铁则（用户实报开工语与完成行连排「🔍🌰」，markdown 单换行必合并）。⭐R96ae 结构性分行定版（用户三报「赛道总览的竞争分和后面的柱状图依然没有回行」——探一下抖音「AI变现」实测复现）：R96ab「段间空行」+R96ac「空行防呆自查」两轮软约束宿主均未执行（漏敲空行→markdown 单换行合并→两条分数条挤行折行错位），弃叮嘱改**列表语法硬约束**——需求分/竞争分/三指标三行一律 `- ` 列表项连排成一个列表块（CommonMark 列表相邻行天然逐项分行，宿主漏空行也合并不了；判定词仍独立段作组帽，建议话术/线索提示行维持独立段），规则两条+示例段同步列表化。⭐R96ac 复测两改（用户反馈）：①判定词上置组帽——用户拍板「红海词应该显示在两个分数上面」，🔴/🔵 判定词统领两条分数居【赛道总览】最前（推翻 R96ab「判定=分数的结论紧随其后」排序），新结构：判定词行→需求分行→竞争分行→三指标行→建议话术行→线索提示行；②空行防呆——用户实报竞争分仍与需求分挤一行（宿主丢了段间空行）：规则改为「段间必须空一行=敲两个回车，宿主输出前自查两条分数条之间必须看到空白行，丢了补上再发」；C1 模板赛道总览段同步重排+线索提示行与建议行之间补空行。⭐R96ab 测试1+测试2 复检四改（用户反馈）：①开工语贴任务不喊口号——R96n 口号开工语「✅ 收到！探一下，线索不错过 🔍」作废（用户原话「第一句话不用这个口号，而是根据具体任务来的，以免造成误解」），改 `✅ 收到！这就探<实际对象> 🔍`（作品链接=这篇/账号=这个号/关键词=「AI获客」/巡逻=巡逻对标；slogan 只住管家栗报到菜单不进任务话术——与 R96o 创作栗「口号是能力名片」拍板同向）；②开工语与完成行之间零过程旁白（用户实报测试1 输出「先确认雷达连接，马上开探：」「✅ 雷达已连接，开探…顺手查一下本地关键词库」全是过程叙述——R96i 实查不出声延伸到任务执行全程：连接确认/工具调用/查库比判定等中间步骤一律不发话，开工语→完成行→交付物直连，仅异常时 ⚠️ 一句问题+下一步）；③收尾语换文案——「雷达待命，下个目标随时发 🔍」→「情报到手，接着挖 🔍」（用户原话「这个文案不够好，需要优化」——对仗创作栗「素材到手，参考着拍 🎬」句式=交付物到手+拿着它干什么；仪式条/骨架条/A 模板/C1 规则/C1 模板五处同步）；④赛道总览分组+回行（用户实报手机上需求分/竞争分两条柱状图挤成一行——根因=markdown 单换行渲染合并同行）：需求分行→（空行）→竞争分行→（空行）→判定词独行→（空行）→三指标独行（集中度/均赞/最爆纯文本）→（空行）→建议话术行——用户拍板「红海词和两个分数一组，三个数据一组」，判定词=分数的结论紧随其后、三指标=原始数据独立成行，每行独立成段行间必须空行。⭐R96aa 测试2 四改（用户复检：①作品详情显示「想一想办法」→AskUserQuestion 拍板**两列标签表**（推翻 R96x 上下结构/R96y 空行分段三轮摇摆——R96y 原话「按照表格的形式显示」即要表格：宿主对加粗独行+空行执行不稳，表格边框自带分区渲染最稳，长标题在内容列自动换行不撑爆；标题放表头行=表头自带加粗不依赖宿主执行 **）三行两列 标题/来源/互动，与 creator【作品信息】同款全端统一；②删 C1【采集速报】总标题行（用户「完全冗余」——完成行已含平台+词+条数，直接从【采集作品】起）；③赛道总览重排（用户「集中度/均赞/最爆不适合与需求分/竞争分并列」+「红海词也展示在纯文本里」）——字符条只画需求分/竞争分两行，集中度/均赞/最爆不画条与判定词合并一行纯文本（判定词 ### 大标题退役）；④【下一步行动】全流程三砍二（用户「只保留 2 个，其他也是同理」——A/B/C1/E 骨架+岔口+模板全改两句））（R96y 收尾栗子发言五处+作品详情空行分段，见前——空行分段条款已随 ① 表格化退役）（用户问「其他地方的单片展示也要同步遵循这个样式吗？多作品展示怎么办」三拍板：①A 流程【作品详情】五列窄表→上下结构——标题**加粗独行**（原样不截断自然换行）+meta 一行 `作者 · 平台 · 类型 ｜ 👍 N · 💬 N · ⭐ N`（与创作栗交付同款全端统一；推翻 R96n 两列表——抖音标题百字塞表格列必撑爆；数字基础不加粗、评赞比 💬≥👍 一半时加粗评论数——信号语义保留与 C1/B 同规，区别于创作栗全加粗强调；抖音行尾加 · 🔁 N）②多片维持五列表+标题截断 ≤18 字（C1/B 不动——信息密度决定形态：单片=完整阅读不截断、多片=快速筛选可截断，20 条上下结构 40+ 行刷屏没法扫视）③洞察栗/成交栗已是标题独行形式天然合规零改动）（用户拍板「我刚才不是说让你把所有的都按照类似要求统一吗？你是改了情报栗？其他的也都要改的」）：【下一步行动】三句独立 code block 退役改「编号短句行」——`1. `栗子研究 <本作品链接>` ← 拆这篇钩子打法`（指令 inline code+理由 ← 同行右侧，3 行收不铺高；理由 ≤8 字动宾短语，禁复述前文数据与长解释——数据正文已给，行尾只留「干这件事图什么」），A/B/C1/E 四流程模板统一改（推翻 R96j/R96n-复测「每句独立 code block」口径，与 helper 报到菜单同规；岔口排位不变、「最该干的一件」永远首位）（1.2.2=⭐R96n slogan 用户定版+详情表两列分开两改（用户复测三反馈）：①开工语换用户定版五句——情报栗「探一下，线索不错过 🔍」/洞察栗「获客方法，一探便知 🧠」/创作栗「获客视频，一键生成 🎬」/成交栗「线索成交，一触即达 💰」/管家栗定位「经营你的AI获客团队」——五句全锚「获客」主张、首尾串联=完整获客漏斗（探线索→知方法→产视频→达成交，管家栗经营全队），「探/触」品牌动词嵌入（推翻 R96m 职能核心词版：用户版把产品卖点写进口号，层级更高）②A 流程【作品详情】表格改标题/作者两列分开（`| 标题 | 作者（平台·类型） |` 两框各自独立——推翻 R96m 一体式首列，用户拍板「标题和（作者·平台·类型）两组分两个框显示」；多行列表 C1/B 维持首列一体式省列宽；抖音加转列 6 列为该场景例外）（1.2.1=⭐R96m slogan 体系+样式统一+评论分档+理由极简四改（用户复测六反馈）：①开工语 slogan 体系定版（用户判「雷达转起来 🔍」傻，要求每栗与核心词挂钩）——四栗口径：情报栗「目标锁定，开探 🔍」（探=品牌动词+雷达锁定感）/洞察栗「开拆，看门道 🧠」（外行看热闹内行看门道俗语底）/创作栗「下料，三件套这就齐 🎬」（下料=备料动词，三件套=存选题/下素材/提文案）/成交栗「捞单去，话术随身 💰」（捞单=获客行话，话术随身=交付物名片）②作品类表格首列=「标题（作者）」一体式样式统一（A 流程《标题》题注+作者单列窄表与 C1「标题（作者）」分叉消除——作者不再与标题分家；单行记录标题不截断自然换行，多行列表维持截 18 字）③A 流程【线索快扫】分档原始评论按点赞降序（🟢 strong_sample 全列 ≤5/🟠 weak_sample 高赞 ≤3/🟡 痛点典型 ≤2 新增/⚪ 不列原文只计数；50 条全量不铺开——全量在插件面板「评论/线索」弹窗）+横幅透明化必带「插件规则引擎判定（词库可解释，非 AI 评分）」（用户问「是不是 AI 编的/数据假的吧」——快扫是插件规则引擎按客资词库判的可解释分级，MCP 重采同作品 50 条实证 A3 率 42%=(10+11)/50 算术自洽真实）+A3 率照抄 quick_scan.a3_rate_pct④下一步行动理由极简 ≤8 字动宾短语（「← A3 率 42%，换到你自己的作品评论区挖客户」→「← 换自己评论区挖客户」级，A/B/C1 三模板九处统一改，禁复述前文数据）（1.2.0=⭐R96k 呈现公共骨架定版+A 流程四栏目重构：①呈现公共骨架（全采集流程 A/B/C1/E 同构——骨架四段：开场双行/对象详情段/核心数据段/【下一步行动】+收尾交付语「雷达待命，下个目标随时发 🔍」；小标题统一【】样式禁①②③编号——A=【作品详情】【评论数据】【线索快扫】【下一步行动】/B=【账号详情】【作品数据】【一眼结论】【下一步行动】/C1=【采集作品】【赛道总览】【代表账号 TOP5】【下一步行动】/E=【巡逻摘要】【下一步行动】；什么时候用表格：多条同构记录一律表格、分数与占比对比用 20 格 █░ 字符条、判断/建议/跟单名单短句行不进表格、单对象元信息一行题注+窄表——用户拍板「公共底层逻辑一次定齐全端，不要等逐个测」）②流程 A 整段重构（四栏目：作品详情一行题注+窄表/评论数据四档分布表/线索快扫温度计字符条复刻插件快扫观感——每档一行 emoji 档名 █░×格数 条数、🟢 优先跟最多 5 条/A 岔口排位：自己的作品或 A3 率≥30% 或 🟢≥5 条触达首位、评赞比异常/断层爆款打法值得学研究首位、默认对标首位）③转发列守卫（全端统一：小红书全链路不显示不导出转发——shareCount=分享按钮次数非转发指标，仅抖音给转列 0/null 显「—」）④B 栏目化【账号详情】【作品数据】【一眼结论】+条数声明砍「要加减说一声」（与 C1 同规）+C1 小标题①②③→【】+E 巡逻摘要短句行→三列表格（1.1.9=⭐R96j 复测三反馈：赛道总览字符柱状图版六列判定表退役/「下一步行动」三句分别复制独立 code block 纯提示词/砍收尾钩子）（1.1.8=⭐R96h 复刻插件快扫三栏目+「下一步行动」三句可复制：C1 重组「①采集作品+②赛道总览+③代表账号TOP5」——判定词/建议话术/结构与插件关键词卡逐字同源（🔵🔴🟡⚫ emoji 复刻插件 SVG 四宫格观感；判定算法轻量预估与插件阈值同向：需求分=量级分+评赞比异常加成、竞争分=100−集中度×0.8，keywords 源查到插件判定则整行照抄）；「立即行动」更名「下一步行动」=三句推荐提示词 code block 直接复制（栗子入库/对标/研究，四岔口推荐位排首位注明理由）；C2 四段模板退役并入 C1（1.1.7=⭐R96g-2 对勾新质+一表一判一行：状态符号定版 ✅=就位/成功、⚠️=异常（每次就位或成功必打 ✅ 形成新质）；完成行一句话=花了什么+产出了什么（成本只念有感知的：耗时为主，免费采集不念额度——「占采集额度 1 次」口径废弃）；C1 砍长篇结论段改速判表 |判定|证据| ≤3 行+收尾「立即行动」全端更名（B/C1/C2/E 四处，原「今天最该做的一件事」）；C1 砍时间戳与「默认N条要加减」重复声明（1.1.6=⭐R96g 赛道速览 v2：数据准备三步+四段模板+四岔口决策树只推一件）
+  insights: "2.3.12", // ⭐R96gba~gcf 2.3.7→2.3.12 五连跳：gba 主副词归位（菜单指令栏=主词唯一真源）+gbb 四主词拆解（研究×作品/账号/关键词+复盘）+gcd 栗子报告统一动作词/复盘两出口+gcf 四主词专属同义词（拆解/研究一下这个号/研究一下<关键词>/复盘我的账号，禁「无专属」空挂）｜⭐R96bw 2.3.6→2.3.7：三报告领取瘦身+栗子报告合一入口（⭐2026-10-27 用户三问复盘赛道报告领取实收——问1「结尾这个也比较冗余，赛道机会的简介是否跟保同源的素材；后面的素材是不是都删除，直接引导用户去web端看就行了？栗子领取改为栗子报告是不是更好？直接查看所有最新的生成7条报告」+问3「三大报告是否能正确触发全量报告能力，中间是否有断点」取证两断点：①宿主为凑「说人话三个发现」自查本地库只找到 10-26 历史搜的 15 条旧笔记拿旧数据验证新报告——根因=引擎 executeTrackDeep 采集数据用完即弃不落 IndexedDB；②宿主称「策略/对标明细没随回执返回」自由发挥——根因=云端空返回被 filter(Boolean) 静默吞行；AskUserQuestion 三拍板「三报告统一瘦身/领取+列表合一/断点本批一起修」）：①三报告统一瘦身——能力 1/4/6 领取交付删「按第五节模板说人话解读+【下一步行动】」，改【完整报告】链接+「栗子查 XX报告」提示收尾（帽+关键行照抄+链接，全量明细 web 端看）；第五节模板加适用范围限定「仅深采等无 web 报告页的纯数据回执用」；②「栗子领取」全局退役换「栗子报告」（14 处，radar 3 处/引擎 13 处文案/mjs 20 处同批）+合一入口规约——有 pending 完成结果先交付最新一份+尾附最近报告一览 ≤7 条，无 pending 直接 query_local_data(source=reports) 列最近报告表（类型/对象/时间/一句速判/链接）可「栗子查 <名称>」展开，旧词栗子领取同认兼容；③配套引擎断点修复（ADAPTER 1.2.90）：executeTrackDeep detached 段补 putNotes/putComments 落库+summarizeTrackDeepResult 策略/对标空时显式报行「本次未随回执返回——打开报告直达链接看全量渲染」防宿主自由发挥。引擎批须重载插件。⭐R96bv 2.3.5→2.3.6：扫描量可调开窗 insights 侧（⭐2026-10-27 用户拍板「开窗也直接做了」——R96bu 预告的下批引擎开窗提前到本批执行，AskUserQuestion 拍板「先透明+下批开窗」的「下批」就是本批）：能力 6 赛道深研发起段补扫描量可调口径——leadsradar_track_deep_research 新增三参数 sample_count（列表采样 20-120 默认 80）/top_deep（深采条数 5-30 默认 20）/comment_limit（每篇评论 10-100 默认 20），⭐用户主动指定扫描量/深采量/评论量时才透传（「多扫点/只深采 10 条/评论多采些」类指令），默认不传走引擎默认，超范围引擎自动夹回边界禁宿主自己拦；pending 首段扫描规则行照抄回执 message 实际生效参数（回执已带「采 X 条列表 + TopY 深采」实际值+params 字段——用户调过就照抄调后的数字，禁照抄 SKILL 示例里的默认 80/20）；能力 5 深采已有参数口径不变（limit=深采条数 1-50 默认 20/comments_limit 10-100 默认 50）。配套引擎 agent-tasks.ts executeTrackDeep 三参数白名单 clamp+sendMessage/progress/estCollect/params 全参数化+AI 样本截断 slice(0,aiSampleCap) 跟随实际采样量（draft 命中存量数据仍按 80 截断）+mjs TOOLS inputSchema/dispatch 双注册。引擎批须重载插件。⭐R96bu 2.3.4→2.3.5：pending 首段四板块定版+三禁（⭐2026-10-27 用户三问复盘赛道深研实收 pending——问1「输出没有按照我们之前说的要求，不太符合规范」实收超纲三处：自辩段「这一轮是真实深度报告，不再是我手工拼凑的速览」/计费扩成 bullet 大段/pending 结尾挂「拆透了，照着打」收尾语（pending≠交付）；问2「用立即回复+二次查询的方式做的是吧？第一段的提示词怎么设计？展示哪些板块？」——确认两段式链路正确，AskUserQuestion 拍板「四板块定版」；问3「本地扫描应该有说一下本地扫描规则吧？参数是否支持宿主调整（命中和扫描量等）」——拍板「先透明+下批开窗」）：①能力 4/5/6 三异步闭环第 1 条统一改 **pending 首段四板块**——启动行（已启动·耗时 N 秒·对象）/扫描规则行（照抄回执真实参数：采多少条→深采几条→AI 出什么，赛道=80 条→点赞 Top20 深采→三段式报告；禁自己编扫描量）/提示行（标签页别关+计费各一句）/领取行（「栗子报告」+括注等来的是什么报告），全文 6-8 行收束，复用缓存分支②改口③删标签页提示；②第七节新增 ⭐R96bu 公共条款「四板块与三禁」——三禁：禁自辩段（过程自述类）/禁计费扩段（照抄 credits 一句收）/禁 pending 收尾语（**栗子收尾语只在「栗子报告」交付后出现**）；③下批引擎开窗预告（记账不入本批）：capture_profile/track_deep 加 options 白名单参数（sample_count 20-120/top_deep 5-30/comment_limit）供宿主调扫描量命中量。纯 SKILL 批零引擎改动，radar 不动。⭐R96br 2.3.3→2.3.4：账号深度研究 Agent 直发+报告顶部专属帽+积分权益必念（⭐2026-10-27 用户六条咨询「三个报告分别摘录输出展示输出顶部区域的内容【内容主题】【账号定位】【赛道机会】」「这个板块都要有【完整报告】链接XXXX」「【下一步行动】」「积分和权益变化也要算在成本里面」「其他无关的重复快扫不要展示，因为和探一下重复了」+追加实锤「我们现在聊的栗子研究『账号』就是『账号深度研究』啊，你还没接入？」）：①能力 4 整节改 Agent 直发——leadsradar_account_deep_research(url[, platform]) 直接发起（⭐R96br 引擎开窗：快路径本地素材够（≥10 条且 8 条有正文/逐字稿）2-6 分钟/慢路径自动深采垫场 20 条 6-25 分钟 pending→栗子报告，报告四板块 账号定位（IP 主线/受众分层/变现模式）/内容支柱/获客速判/完整报告 deep_link），不再指路插件手点；②能力 1 深拆顶部加【内容主题】帽（report.summary 照抄+线索指数/线索率关键数字——报告是啥就展示啥）+【完整报告】独立板块（report_url 裸链单起一行，web 端渲染禁全文搬运）+慢反馈三件套（pending 至少 3 分钟起口径+期间追问如实说「X 分钟前提交」不编阶段不编百分比+领取没领到「再等一两分钟再喊我」不慌报错）；③能力 6 赛道深研顶部加【赛道机会】帽（verdict+market_stage 照抄）+【完整报告】独立板块+成本必念；④能力 5 深采定位收窄（「栗子研究 <账号链接>」默认直走能力 4，深采只在明确要采数据/看逐条明细或能力 4 报 INSUFFICIENT_DATA 需垫场时用）+删独立快扫两行帽（A3 四级计数/线索率/账号四分类/流量分线索分融进「三个发现」——与情报栗探一下重复）+不放【完整报告】板块（纯数据回执无 web 报告页）+【下一步行动】首项改栗子研究快路径；⑤积分和权益变化都算在成本里面统一口径（每类研究交付回执 credits.cost=0 念「本次 0 积分（首免/会员权益）」把权益变化念出来，有消耗念「消耗 N · 余额 M」）——栗子仪式/能力 1/4/6/安全限额四处落规；⑥分流表账号链接行+分流纪律+总述行同步改写。配套引擎 ADAPTER 1.2.87（executeAccountDeep/summarizeAccountDeepResult/buildAccountDeepResult 三函数+account_deep 路由+mjs TOOLS/dispatch 双注册）+radar 1.2.31 同批（引擎批须重载插件）。生效前提=重载浏览器插件+npm 发版+宿主经 leadsradar_get_latest_skills 更新 SKILL.md+完全退出宿主重开。⭐R96bq 2.3.2→2.3.3：研究类三交付补【下一步行动】（⭐2026-10-26 用户咨询「作品深拆/账号深采/赛道深研三个输出结构如何」+追问「这些是否都有下一步行动」——行动区审计实锤：采集/巡逻类（探一下/扫对标/扫我的号/对标入库）都有复制即用指令区，研究类三交付看完不知道下一步喊什么）：AskUserQuestion 拍板补齐，能力 1/5/6 三交付段尾各追加行动区（2 句编号短句行 inline code+理由 ← 同行右侧，与情报栗流程 A/E/F 同款复制即用）——能力 1 作品深拆：`栗子存选题 <这篇链接>` ← 拆出信号的好内容先进弹药库（A3 线索浓度高=🟢≥3 条或 A3 率≥10% 时换 `栗子触达` 顺着报告挖到的客户线索去跟进）；能力 5 账号深采：`栗子加对标 <该号主页链接>` ← 值得学的号入库盯着（回执已在库则换下一条）+`探一下 <近7天爆款作品链接>` ← 看这篇爆款的线索构成再决定学不学；能力 6 赛道深研：`栗子研究 <对标 TOP1 账号>` ← 深挖报告点名的标杆号+`栗子存选题 <赛道代表作链接>` ← 按策略 TOP1 的方向先攒弹药。同批 radar 1.2.30 扫我的号补宾语。纯 SKILL 批次零引擎改动，生效前提=npm 发版+宿主经 leadsradar_get_latest_skills 更新 SKILL.md+完全退出宿主重开。⭐R96bp 2.3.1→2.3.2：赛道深度研究开进 Agent（⭐2026-10-26 用户实报「栗子研究 小红书 辅食」——洞察栗「栗子研究」统一入口三维度盘点：作品拆解 R96at✅/账号深采 R96bo✅/赛道深研❌ 16 工具无通道，宿主只能指路插件手点）：①requires 加 leadsradar_track_deep_research（16→17 工具）；②一点五节分流表「平台+关键词」行改直调——先 query_local_data(source="reports", keyword=词) 查已有 track 报告（有就免费解读+report_url），没有就 track_deep_research(keyword, platform) 直接发起（与插件赛道页「赛道深度研究」按钮同源同引擎：采 80 条+Top20 深采→三段式报告，非会员首免/之后 8 积分，15-30 分钟 pending→栗子报告）——「指路插件手点+回情报栗攒料」旧口径退役；③新增能力 6 整节（异步闭环 4 步：pending 转达含「复用缓存直接 AI 约 2-6 分钟」改口径→claim 领取→交付赛道判定行/策略 TOP3/对标 TOP3/deep_link 裸链+说人话解读→error 五类分类转述，AI_TIMEOUT 附「超时不代表失败」）；④能力 4 收窄为账号深度研究（赛道拆出）、R74 铁律账号/赛道分述、仪式成本行与第七节计费补赛道 8 积分首免口径。配套引擎 ADAPTER 1.2.86（executeTrackDeep fire-and-forget 异步闭环+track_deep 模式）。生效前提=重载浏览器插件+npm 发版+宿主经 leadsradar_get_latest_skills 更新 SKILL.md+完全退出宿主重开。⭐R96bo 2.3.0→2.3.1：垫场速览禁编预估分+账号深采垫场（⭐2026-10-26 用户实报「栗子研究 小红书 辅食」宿主交付轻量速览+编造「需求分70/竞争分53/集中度59%（预估）」——引擎 search_results 本就不附象限分（单词搜索输入不全不硬算），宿主 LLM 现编数字被用户打回）：①垫场速览纪律新增——深采 pending 期间/查无报告时用采集数据先答只准引用回执真实字段：禁编需求分/竞争分/集中度/蓝海词评级这类引擎没返回的指标（没有就说「轻量采集算不出竞争格局，真实判定去插件赛道页快扫/深度研究」）；没采评论禁下「评论区冷热/有无商业询问」类意向结论（列表卡只有互动计数看不进评论区，要下结论先 capture_note_comments 或 deep 深采回执 A3 快扫）；均值/最值/排名可算但注明「N 条样本」，宁说数据不够不编数字；②能力 5 账号深度采集开窗——requires 加 leadsradar_capture_profile，一点五节账号链接分流行改「没有报告→capture_profile(url,deep:true) 深度采集垫场」（与插件「深度采集」按钮同源同引擎 5-20 分钟 pending→栗子报告，领到后按真实数据速览再指路深度研究报告），新增六点五节整节（异步闭环 4 步：pending 转达「预计5-20分钟别关标签页完成喊栗子报告」→claim_pending_result 领取→交付完成行/快控行/账号快扫/近7天最新作品/说人话解读→error 分类转述）；③赛道研究分流行+第七节纪律补「引擎没返回的评分/分级禁止编造或预估」总条款；④能力 4 攒料行改「账号走能力 5 深采、赛道回情报栗搜关键词」。配套引擎 ADAPTER 1.2.85+radar 1.2.29 同批。生效前提=重载浏览器插件+npm 发版+宿主经 leadsradar_get_latest_skills 更新 SKILL.md+完全退出宿主重开。⭐R96at 2.2.8→2.3.0：单篇拆解重设计（⭐2026-10-25 用户拍板「单篇深度拆解有且只有一种，不存在所谓的轻量拆解，这是个巨大bug，需要完全重新设计」）：能力1整节重写——轻量拆解四段卡退役，统一走新工具 leadsradar_note_deep_research（与插件「深度拆解」按钮同源同引擎，deepDiagnosisAsync L2 单篇深度）：先查本地已有报告免费解读（不扣券）→没有则触发云端 AI 分析（扣券，约 1~3 分钟）→AI「说人话」解读（三个发现+最该做的两件事+一个风险+最值得存的一句）→report_url 直达+本地副本自动入 work_records；未登录 LOGIN_REQUIRED 撞墙规范（指路「栗子登录」）；评论/正文不足转述引擎拒绝原因；pending=true 返回时引导用户稍等后喊「栗子报告」拿完整报告（超时自动回灌待领取）。⭐R96y 收尾栗子发言（全端规则「开头结尾都是栗子发言」，与开工语对仗）：「拆透了，照着打 🧠」→「🌰 **洞察栗**：拆透了，照着打 🧠」（2.2.7=⭐R96n slogan 用户定版开工语「开拆，看门道 🧠」→「获客方法，一探便知 🧠」（五句全锚获客主张，「一探便知」嵌品牌动词探）（2.2.6=⭐R96m 同上定版）（2.2.5=⭐R96f 同上定版）（2.2.4=⭐R96e 头像化）
+  creator: "1.2.32", // ⭐R96gay 1.2.31→1.2.32：栗子创作第四件套注册批（「栗子创作 <链接>」注册为第四件套：提取直连仿写开拍稿；description 三件套→四件套+精准触发词注册+L183 漏改补修+批量下载补行动+模糊词兜底层补「创」行）｜⭐R96gaw 1.2.30→1.2.31：提取文案后【下一步行动】次位研究→下载（五维评分拍板：下载 3.25 > 研究 2.95——文案刚到手最常见是先拿素材参考着拍，视频/图文两模板同步）｜⭐R96df 1.2.29→1.2.30：媒体链接附文件末尾（⭐2026-10-29 用户拍板「把视频链接和图片链接等也附在md文件里面，在最后面，方便用户自己下载」）：引擎 extract_text 回执 data 透出 mediaUrls（video=无水印视频地址/videoList=多清晰度视频列表/images=图集原图列表/cover=封面/audio=音频，全去空），creator SKILL 落盘文案 md 最末尾追加「## 媒体链接」段（先一行说明「链接复制到浏览器即可自行下载（第三方 CDN 直链，有时效性，建议尽快保存）」再逐条列行：视频（无水印）/图集图片按两位数逐张编号（图片 01…）/封面）——只写进附件 md 文件禁堆对话正文（对话只在【文案提取】表后提一句「媒体链接已附在文件末尾」），mediaUrls 无值（引擎未返回）不编造不提；⭐R96cu 1.2.28→1.2.29：图文三形态模板+图号前缀（⭐2026-10-29 用户拍板两落点——①引擎侧 OCR join 加图号前缀〔图 N〕：宿主有「按图分块」原料且封面→内页图片序列结构可读（这本身就是仿写关键信息）；②SKILL 侧动作 3 新增图文三形态模板与视频逐字稿模板并列——决策树：图字主型（图字≥正文或正文<50字）图字分块升主位/正文主型（图字<50字≈封面钩子）套视频模板改引用段/双强型（两边≥50字）图字分块在前+正文全文在后/拿不准图字优先，决策原则「谁承载文案本体谁占主位」；模板=完成行（图文文案已落盘）+【文案提取】表第四行「图上文字」+形态判断行（带数字依据 N 字 vs M 字）+图字分块引用（〔图 N〕原样透传禁重排，图号跳缺属正常）+正文降级行（图字主型一句话概括/双强型全文照引）+【文案结构】图号列（图号是真实序非估算，不用时间码）+硬规两条（形态判断必带数字依据/图号禁重排）+L73 回执结构注同步（〔图 N〕分块前缀+主位按三形态定）。引擎批：插件需重建重载生效）。⭐R96cq 1.2.27→1.2.28：并列要点逐条换行总纲+图文额度凭据防呆+小红书禁转（⭐2026-10-28 用户实报两案——①视频交付学什么/避什么分号连排不回行，「这类格式问题总在不同地方反复出现」要求治根：硬规新增通用总纲条，交付内一切并列要点（学什么/避什么/钩子变体/卖点/标签/一切清单类字段）一律逐条一行（> ①/> ② 引用行或编号行）禁分号顿号斜杠连排挤一行，模板学什么/避什么同步钉死逐条一行格式；②小红书图文交付零 OCR 调用却编「云端转录只返回了正文全文（无图片 OCR 结果）」假话术——实锤三证：耗时 2 秒不可能走完 OCR 提交+轮询、完成行无「文案提取额度已用 X/Y」、引擎从不说那句话，宿主只采 note_detail 拿 body_text 顶替交付（R96bi「图文必调 OCR」条款未被执行，插件引擎链路本身正确无需改）；修法=硬规图文额度凭据防呆条——图文交付完成行必须带「文案提取额度已用 X/Y」（该行=真调了 extract_text 走 OCR 的唯一凭据，真调了额度回执必返），无额度行=没调 OCR 违规，禁编「云端转录只返回正文/OCR 无结果」类假话术（引擎真调了要么【图片文字】+【正文】两段回执照抄、要么明确报错「图片 OCR 未识别到文字」如实转述）；③顺带：小红书互动行禁 🔁（实报视频交付混入 🔁 644——share_count 是分享按钮次数非转发数据，仅抖音给转列）。纯 SKILL 批零引擎改动，ADAPTER 不动）。⭐R96co 1.2.26→1.2.27：照读标注按转写质量分档（⭐2026-10-28 用户实报「栗子提取」方言视频交付——开场段标「可直接照读」与同交付避什么「ASR 转写错字多需人工校稿」自相矛盾，且 310 字/159 秒≈2 字/秒丢字过半、结构表时间码全靠推断；修法=SKILL 模板行「（钩子段，可直接照读）」固定标注退役改中性「（钩子段）」，硬规新增照读分档条——转写通顺（普通话、无连续错译句）标「可直接照读」、方言/口音/环境音重错译句 ≥2 处改标「需校稿后照读」且避什么同步点名「ASR 方言转写错字多照读前需人工校稿」、字数 <3 字/秒时避什么加「转写丢字多结构表时间码为推断值」提示——禁对错字稿标「可直接照读」。纯 SKILL 批零引擎改动，ADAPTER 不动）。⭐R96bi 1.2.25→1.2.26：图文提取必调 OCR+两段回执照抄（⭐2026-10-26 用户实测反馈3「目前针对图文类的提取文案也要调用any2copy提取图片上面的文字，正文也附在里面；但是图片上面的往往才是主要内容」）：动作 3 两步重写——①步骤 1：仅视频类已挂载转写（transcript）有就直接用不花转录额度；图文类必调步骤 2 走 OCR（用户拍板「图片上面的往往才是主要内容」——页面正文只是附带，禁拿 body_text 顶替图上文字省额度）；②步骤 2：ASR 空时引擎已自动降级 OCR 宿主无需带 note 对象重试；图文回执结构=【图片文字】在前为主+【正文】在后附带（⭐R96bi 引擎自动拼）——照抄两段全给禁只给其一。配套引擎 ADAPTER 1.2.80（executeExtractText 重写 buildOcrSuccess 公共出口+ASR 空自动降级）。⭐R96bf 1.2.24→1.2.25：存选题核对口径改版（⭐2026-10-26 用户实测反馈2「存选题后显示 已核对：选题仓库第 1 条 · 仓库现共 1 条，但是我的选题仓库明明还有好多，怎么才检测一条呢？」——根因=动作 1 存后必查教宿主用 query_local_data(source="works") 反查本地 IndexedDB works 充当「云端选题仓库」计数，本地是插件本机缓存非云端仓库，云端几十条本地 1 条时报「现共 1 条」口径事故）：①动作 1 第 3 条存后核对整段重写「⭐R96bf 口径改版——总量直读回执，本地反查退役」——回执带 topic_total（云端选题仓库当前总条数，服务端 supabase count 真源）直读回显「已核对：云端入库成功 · 选题仓库现共 M 条（本条为最新入库）」，**禁再用 query_local_data(source="works") 反查本地 works 充当仓库总量**，「选题仓库第 N 条」旧说法退役；②第 4 条 duplicates 行对齐「+回执同样带 topic_total 照报总量（已存在也报真实仓库总量，禁报本地计数）」；③第 6 条交付形态核对行对齐新口径。配套引擎 executeSaveTopic 回执两分支（成功+already_exists）透出 topic_total+web 端 create-from-plugin route 服务端 count（archived=false 口径）+ADAPTER 1.2.77 同批。⭐R96ba 1.2.23→1.2.24：收尾防呆再硬化两条新形态（⭐2026-10-26 用户复测封面修复成功后实报交付末尾仍跟两段——「下载完成：马代视频无水印 MP4…已落盘…附在上方卡片」镜像复述段+「两点说明：①这次把封面也带下来了（上次只有视频）；②插件连接闪断…重开 Chrome 窗口…自动升级到 v1.2.70」修复史/插曲自述段；R96ac 点名四条后旧形态已消失、本次犯的是未点名新形态）：第六节附件条禁令清单加⑤禁镜像复述段（指引行的复读机版，文件名/大小/路径正文全给过还把「下方」错写成「上方卡片」）⑥禁「两点说明/补充说明」自述段（修复史=版本差异用户不需要知道、过程插曲对齐情报栗 R96ay 插曲叙述禁令——用户要结果不要流水账）。⭐R96as 1.2.22→1.2.23：触发词动作化——注册词「栗子存选题 <链接>」（⭐R96as 五词拍板之一，旧词「栗子入库」同认），frontmatter description/精准触发词条/【下一步行动】三处换词。⭐R96an 1.2.21→1.2.22：提取交付定版五改（⭐2026-10-24 用户实测「栗子提取」逐字稿到手后五反馈：①下一步行动导向栗子创作优先（与存选题 R96aj 同拍板——文案到手最顺的下一步是开拍，`栗子创作`固定第 1、`栗子研究`第 2）；②完成行必念文案提取额度「X/Y」——引擎 quota 尾巴一直有但宿主只念采集额度（用户「消耗的免费额度1/1没有计算和提示」），X=Y 追加「今日免费额度已用完明日恢复」，两本账并排念清，禁带下载场景「素材本机已有未重复下载」话术；③【文案拆解】改名【文案提取】+逐字稿进表——标题/来源/互动三行下直接加第四行 `| 逐字稿 | 📁 路径 · N 字 · 已附在下方 |`（用户「应该直接在标题、来源、互动下面展示逐字稿的下载地址和字数」）；④【文案结构】表格化 `|时间码|结构点|简述|`+表后一句话评价「值得模仿/不值得模仿+理由≤20字」——时间码是估算值（ASR 逐字稿无时间戳，按各段字数占比×视频时长折算一律带「约」，禁精确到秒假装真实测）；⑤推翻 R96ak 三段式旧模板（标题钩子 3 变体/内容结构/口播全文）——变体不再默认输出，开场 30 秒钩子段引用块保留、全文走附件）。⭐R96ak 文案提取 Agent 开窗 · ⭐R96aj 存选题交付定版（完成行不念额度+仓库计数+下一步行动两选项+重复检测说明）。⭐R96ai 视频封面伴下（引擎提取层补 cover，视频返回清单必有封面，附件=MP4+封面双附件）。⭐R96af 图集嵌图退役改全附件（⭐2026-10-24 用户实测手机端 16 张图集零附件：「主要问题是附件，我看在手机端没有给我附上」+「图片比较多 16 张怎么展示才不乱」+「图片地址表格下方有很大的空格」三报同根——file:/// 嵌图是电脑本地路径，WorkBuddy 手机端渲染必裂，5 张裂图占位成大块空白即用户看到的「大空格」，宿主判断不了自己所在端无法执行「裂图自删降级」；旧口径「嵌图=已交付本体不另附文件」两头落空作废——附件是手机端拿图的唯一通道）：图集 N 张图片逐个作为附件附在交付末尾（单作品全附不问，表行可合并、附件逐个不省略），指引行分场景拼「16 张图片已附在下方，点开即可保存」；file:/// markdown 嵌图整条退役（单作品/批量同退役，批量附件 >5 先问维持）；【下载目录】合并行形态保留。⭐R96ac 复测防呆强化（用户实报新开窗口测试指引行后仍跟去重解释两大段——宿主读到 1.2.16 禁令仍违规）：三处落规①第六节骨架条新增「交付末 3 行定版」——收尾语→（空行）→指引行→全文到此结束，指引行后一个字都不能有（不解释去重机制/不复述数据/不再报路径/不再喊指令——四类信息各有归属区块）；②第四节去重条尾加「交付末尾零复述」（去重解释只在完成行、位置只在【下载目录】、指令只在【下一步行动】）；③第六节附件条禁令细化为四条禁止清单+「指引行写成独立一行，句子写完就停，别用句号后继续接话」。⭐R96ab 测试2 唯一反馈「冗余多余文案都去掉」+过程旁白两改：①第六节附件条硬化——指引行 `视频+封面已附在下方，点开即可保存` 即交付最末一行，**之后禁再跟任何内容**（用户实报指引行后还跟文件明细 bullet 块（视频/位置/数据三行——【作品信息】【下载目录】正文已给）+「要继续的话直接喊：栗子提取/栗子入库」段（【下一步行动】区块已给）全冗余应删）；②仪式条开工语与完成行之间零过程旁白（用户实报测试2 输出「详情已到手，正在下载无水印素材：」「素材本机已有，核对一下落盘文件夹的实际文件：」「按交付规范记录一笔工作日志」全是过程叙述——工具调用/去重核对/记录日志等中间步骤一律不发话，开工语→完成行→交付物直连，仅异常时 ⚠️ 一句问题+下一步；与 radar 同批同规）。⭐R96aa 作品信息表格化（用户测试2 复检「还是没有按照预想的显示，想一想办法」→AskUserQuestion 拍板两列标签表，与 radar【作品详情】同款全端统一——推翻 R96v 上下结构/R96y 空行分段三轮摇摆：表格边框自带分区渲染最稳、标题放表头行自带加粗不依赖宿主执行 **、长标题在内容列自动换行不撑爆）：三行两列 `| 标题 | 全文原样不截断 |`+`| 来源 | 作者 · 平台 · 类型 |`+`| 互动 | 👍 N · 💬 N · ⭐ N · 🔁 N |`（互动数字全加粗、小红书无转、图集在来源行标·图集；标签窄列内容宽列）。⭐R96z 附件数量原则+说明行归位（用户复检测试1两反馈「视频 MP4 已附在上方」说明行位置与文案双错+「附件这次只出来了一个视频，要求每次都把视频和封面同时都附出来，前面显示了多少素材后面就要附件多少，其他的地方也要按照这个原则来」）：①**附件与【下载目录】清单一一对应**——表里列出 N 个文件就附 N 个（视频 MP4+封面 JPEG 都要附，用户实报只出视频封面漏附；图集已嵌图展示的图片不重复附文件=嵌图即交付本体；批量场景同原则：合并表列出多少就附多少，>5 先问保留）②**附件说明行归位**——从收尾语前移到**收尾语之后**（交付最末一行），文案写「下方」`视频+封面已附在下方，点开即可保存`（附件在宿主实际渲染于消息下方，旧「已附在上方」位置与文案双错）；收尾即收尾的**唯一例外**=附件指引行③**分段铁则全链延伸**——开工语行/完成汇报行/各区块/收尾语/附件指引行各自独立成段两两之间必须空行（用户实报开工语与完成行连排成一行——markdown 单换行渲染合并为空格）。（R96y 三改详录：）①收尾语加栗子前缀分动作——下载「🌰 **创作栗**：素材到手，参考着拍 🎬」/存选题「🌰 **创作栗**：选题入库，弹药备好 🎬」/提文案「🌰 **创作栗**：文案到手，拿去开拍 🎬」+**收尾即收尾禁再跟长解释段**（用户点名「视频和封面都给你挂上面了…插件自动去重…强制重新下载…喊一声栗子提取/栗子入库」整段应删——去重信息完成行+下载目录已给不重复，必要补充 ≤1 短句并入收尾行内）；②【下一步行动】三列表退役→**编号短句行 2 选项**（用户拍板「不要表格有点冗余、不要三个选项全部改为两个」——推翻 R96v 表格化回行式）：默认 `1. 栗子提取 ← 抠出口播文案` `2. 栗子入库 ← 存进选题仓库`（同栗创作链路下完素材→提文案/存选题；爆款可换首行栗子研究；指令不带链接沿用 R96v 上下文拍板）；③动作 2 去重转述极简（完成行尾缀「素材本机已有，未重复下载」+下载目录给位置即够，禁收尾再解释去重机制/主动给强制重下指引——用户要重下再说）（用户拍板多作品场景紧凑块+合并表）：动作 2「账号素材批量下载」第 4 条——完成行 `✅ 批量下载完成：成功 N · 失败 M` → 逐作品紧凑块两行（**标题截 20 字**加粗独行+meta 一行 `👍 N · 💬 N · ⭐ N ｜ 1 视频/N 图`，文件明细不在此重复）→ 合并【下载目录】一张表（`| 文件 | 位置 |` 逐文件一行，同文件夹第二行起「同上」）→ 附件逐个附（每个视频 MP4 都附，>5 个先问「全附还是只报清单」）；批量图集不逐张嵌图（单作品才嵌图）文件进合并表即可；第六节三区块条注明单作品形态、批量不套用。⭐R96w 交付末尾附文件（用户实报「本次输出没有附带文件可下载，之前都是把附件附在后面，手机也可以直接下载；没附是巨大缺失」）——第六节新增交付必经步骤：三区块输出完后把落盘视频 MP4 作为文件附件附在交付末尾（拿返回清单绝对路径走宿主发文件能力，WorkBuddy 手机端点开即存）；图集按动作 2 嵌图走不另附；确实发不了才降级只报表格+路径（先试一次再降级）——根因=R96u/R96v 三区块模板化后宿主 AI 只照模板输出表格，动作 2「宿主能发文件就直接推」（R73 拍板）藏在子弹里被忽略，落位为模板必经步骤根治。⭐R96v 三区块再调+去重（用户复检四反馈「格式和文件合并」「位置直接显示完整路径」「下一步行动也用表格」「标题为何如此之长」）：①【作品信息】上下结构——标题加粗独行（原样不截断自然换行）+meta 一行（作者·平台·类型｜互动数字全加粗；推翻 R96u 两列窄表：抖音标题动辄百字表格列必撑爆）②【下载目录】两列表 |文件|位置|——文件名截 20 字+大小括号接尾（格式列退役扩展名已表意）、位置=📁+完整落盘文件夹路径 inline code（首行全路径第二行起「同上」；表下题注行退役防重复；推翻 R96u 三列+题注式）③【下一步行动】三列表 |#|指令|干什么|——指令列只写指令词不带链接（⭐R96v 拍板：同会话用户紧接着回喊指令词默认取最近一次交付作品的链接作参数；隔太久/多作品混聊先确认对象；推翻 R96u 编号短句行式）④动作 2 新增重复下载去重条：插件同作品已落盘且文件在→自动跳过重下返回「本机已有未重复下载」+位置，如实转述别二次触发；强制重下走插件作品卡手动通道（插件端 executeDownloadMedia ⭐R96v 去重闸配套）。⭐R96o 下载场景四修（用户实报 16 张图集下载全链路，反馈「问题很大」）：①开工语分动作——口号「获客视频，一键生成 🎬」是能力名片、只住管家栗报到菜单，任务开工语贴着任务说：下载「收到！无水印素材，这就下 🎬」/存选题「收到！好选题，这就入库 🎬」/提文案「收到！文案这就抠出来 🎬」②收尾语分动作去搬运暗示——下载的是别人的素材、用途=参考/拆解/二创，禁「货备好了拿去发」（用户：「别人的素材怎么拿来发呢？」），下载收尾改「素材到手，参考着拍 🎬」③动作 2 图集交付前 5 张本地 file:/// 嵌入 markdown（宿主不渲染裂图自删降级报清单）④【下载清单】窄表化+尾部 next steps 改编号短句行 inline code（1.2.7=⭐R96n slogan 用户定版开工语「下料，三件套这就齐 🎬」→「获客视频，一键生成 🎬」（获客视频=用户要的最终产物场景聚焦）（1.2.6=⭐R96m 同上定版）（1.2.5=⭐R96f 同上定版）（1.2.4=⭐R96e 头像化）
+  closer: "1.4.34", // ⭐R96g1ba 1.4.33→1.4.34：看板行数即规格+代发 author_id 贯通+深楼定位口径批（①【7天待回应】实报只显 6 条+「173条中…」残行——样例 3 行压过 20 条指令，样例扩满 20/12 行+行数即规格硬规+算术自洽；②send_reply 补 author_id 同传纪律；③深楼定位失败口径=重试 1 次仍败即停手换浅位目标）｜⭐R96gq 1.4.32→1.4.33：看板两板块渲染根修批（用户实报「【7天待回应】【7天获客榜】这俩也没看到啊」宿主自由发挥旧按作品聚组格式——根因=我的线索视角主指令仍写「输出与账本查询同构（按作品聚组四列留痕表）」压过两板块定义：①主指令改「输出=统计行+看板两板块定版+样例照抄」聚组形态看板场景退役 ②补看板定版样例整段照抄级（统计行+【7天待回应】七列表+交代行+【7天获客榜】表+行动行））| ⭐R96gp 1.4.31→1.4.32：【7天待回应】A3+优先排批（用户拍板「评论的A3级别和来源也要加上，按照A3+优先来排列」——列式升 `|#|A3|客户|评论|来源|回评|私信|`：A3 列取回执 intent 映射🟢A3强/🟠A3弱/🟡A2/⚪A1、来源列取 note_title 作品名截前12字；排序 🟢→🟠→🟡→⚪ 同级问价/求购/求合作优先；数据面 lead_records 已直出 intent/note_title 零引擎改动）｜⭐R96gl 1.4.30→1.4.31：误发事故根修（代发纪律新增「确认单行直拷贝」——send_reply/send_dm 参数必须从阶段 2 确认单行逐字复制，禁发送时重新捞库按序号取行重组；回执即核每条到即核 matched_commenter 禁攒批末；DUPLICATE_REPLY=引擎防重拦截禁绕过须与用户核对）+⭐R96gm 看板两板块（我的线索看板：【7天待回应】20 条列式含回评/私信两栏规范格式禁省略+【7天获客榜】12 条）｜⭐R96gcj 1.4.29→1.4.30：初卡回填 lf_leads 历史留痕（阶段 1 出卡前查 contacted 回显，治「测过多次记录显空」）+评论采集默认 50 条提速 | ⭐R96gay 1.4.28→1.4.29：查询四词主次+终版快照/设置出口批（查询四词三层化「栗子触达记录」主词+「谁还没回/触达了谁/未完成任务」注册同认；会话内推进词家族标注；点名全形同认；阶段 4 终版快照必带出口；第七节触达设置查/改完必带出口）｜⭐R96gas 1.4.27→1.4.28：栗子守家更名批（⭐2026-11-03 拍板「栗子守家改为栗子我的线索，展示我的待回应线索」）——description/一节触发词行/第六节看板标题【我的待回应线索】全链改名+成交栗提示语定版「栗子触达/回复/私信 <作品链接> · 栗子我的线索 · 栗子触达设置」（L39 职能语旧词守家兼认保留）｜⭐R96gar 1.4.26→1.4.27：栗子守家入口批（⭐2026-11-02 用户拍板「栗子守家」命名+「成交栗内入口」不加第六技能，类比复盘之于账号研究=栗内入口）——description 触发词注册「栗子守家」（职能语兼认「回自己账号的评论/我的待回复」）+触发词行+守家流程（lead_records source=own 拉「我的账号」待回复→按作品聚组跟进卡→行动行回评优先=自己作品纪律）｜⭐R96gaq 1.4.25→1.4.26：入口定版+留痕表定版+截流渠道纪律批（⭐2026-11-02 用户四拍板）——①「栗子触达是一个入口，让用户根据评论选择回复还是私信」：description+一节入口口径（出跟进卡后停选号步，用户按每条评论意向点名渠道「回1、3，私6」再进阶段2，宿主禁替用户定渠道）；②「触达记录要按照作品来，回评和私信是两个字段，✅展示发的内容，没有的为-，表格保持统一格式」：第六节留痕表定版——按来源作品聚组（作品名加粗组标题）+每组固定四列|#|客户|回评|私信|，完成=✅+话术截30字、没做过=-，默认≤3作品组×每组≤9条，格式恒定禁变体（R96gap 渠道列形态退役）、按渠道查=对应列≠-；③「要不要鼓励用户去回复别人评论区的高价值评论？」结论=鼓励触达但分场景：自己作品回评优先（公开立形象零风险）、别人作品（栗子触达/关键词扫描=鱼塘截流）私信优先（回评在别人地盘易被删评/举报营销/判引流限流，确要回评只做无链接无报价无硬钩子的软性答疑）——一节渠道选择纪律+阶段1行动行别人号私信升首位+第六节最值钱段转正（待处理>20默认带Top5=带主页链接+A3问价/求方案，行动引导私信首位）；④账本查询【下一步行动】改双行（栗子私信首位/栗子回复次位）｜⭐R96gap 1.4.24→1.4.25：触发词族定级批（⭐2026-11-02 用户三问：「成交栗技能改为这个？栗子触达<作品链接>·栗子回复/私信·栗子触达记录/设置」「目前触达和私信的意思是一样的吗？还是触达包含回复和私信？要捋一下核心提示词的意思和用词」「触达记录目前只有私信的？」）——①用词定级：触达=总称（含回评+私信两渠道，层级触达⊃回评/私信）禁当「私信」同义词，description+一节新增「用词层级」行；②「栗子私信」注册（私信渠道触发词，与栗子回复同构、不带序号同用阶段 2 筛选交代分支）；③第六节账本查询模板加「今日触达留痕」段（渠道列+发的内容列，touched_reply/touched_dm 取已回档前 9 条，话术截 30 字）+按渠道查口径（谁被私信过=touched_dm 非空/谁被回评过=touched_reply 非空）——转正宿主自发增强（用户实贴输出已带渠道+内容列，比旧模板好），答「触达记录两渠道都有非只私信」｜⭐R96g1ao 1.4.23→1.4.24：开关拆渠道+防误发双闸批（⭐2026-11-02 用户三拍板：①「应该分开，改」——成交文档/人设档案 options 两卡看着两套实际绑同一字段，拆 use_deal_doc_reply/_dm、use_persona_doc_reply/_dm 四字段（插件端存量迁移两渠道继承旧值；云端 route 参数名不变插件按渠道各传；mjs touch_settings 旧名兼容=两渠道同设）+SKILL 第七节两表各补渠道开关行、公共项行删；②「发错的是很严重的问题，要想办法杜绝」——send_reply 加 comment_id 必传纪律（小红书 id=comment-xxx 精确命中防同质评论「多少钱」撞车误发、抖音 DOM 无 id 自动忽略）、ID 命中仍须昵称/uid 硬闸（宁可不发不错发）、回执回显 matched_commenter/matched_comment_text 实际定位评论、宿主逐条核对不一致=误发立即停手告知用户；③xhs 定位窗口 15s→30s（旧评论深滚动可达，缓解「1/2/3/8/9 定位失败」）；④顺手修 send_reply/send_dm message 旧节奏口径→回评 8-40s 按稿长/私信 45-90s（R96g1am 漏改处）；配套 ADAPTER 1.2.164）| ⭐R96g1an 1.4.22→1.4.23：触达设置查呈现拆两表批（⭐2026-11-02 用户大测复验「栗子触达设置」后拍板「触达设置的回复设置和私信设置要分开两个表格展示」——旧单表八项混排回评/私信字段交错，拆分后各自独立一目了然）：第七节「查」改两张表格——【回评设置】（手动回评稿/AI 回评要求/AI 字数回评/生成条数）+【私信设置】（手动私信稿/AI 私信要求/AI 字数私信/生成条数），成交文档/人设档案注入为公共项跟两表后一行文字（回评与私信生成共用同一开关不进表）；mjs touch_settings description 同步补两表口径（配套引擎 ADAPTER 1.2.163）。 | ⭐R96g1am 1.4.21→1.4.22：触达节奏定档批（⭐2026-11-02 用户问「每一个间隔45秒感觉有点慢，论证下多久合适；组间间隔多少合适？私信的MCP速度如何？」+拍板「回评8-40s随机跟评论字数有关系；加象征性的组间距比如1分钟，插件端手动也要加；私信也是批间隔1分钟；日限200和80」——实查 MC v0.4.0 源码定档：OUTREACH_FEATURE_KEY=outreach.private_message 实锤 MC 只有私信无回评（回评是 LF 独有能力，无竞品对标）、私信 45-90s 已实证跑一版、「每 5 人健康检查」=发送前安全门（风控信号/发送账号身份/页面响应三查，inspectLiveContext）非节奏单位——LF 已有同款反应式保护+身份卡无需新增；新档=回评批内 8-40s 按稿长（模拟真人打字：30字≈19s/60字≈29s/80字+封顶40s——回评=博主在自己作品下互动平台鼓励、风控判内容不判频率）、私信批内 45-90s（MC 同款实证）、批间 ≥5min→1min（象征性分段，MC 零组间等待更松）、日限共享 100→双账本解耦回评 ≤200/私信 ≤80；SKILL 六处改（版本/分批方案表/分批规则/节奏纪律主段/第八节硬规/阶段 3 照抄模板）+mjs send_reply/send_dm description 同档+插件 CommentDetailsModal 同档（回评批量按稿长 8-40s+私信批量 45-90s+批间 1min+双账本 lf_touch_ledger 继承旧计数/lf_touch_ledger_dm 新建，REPLY_DAILY_CAP=200/DM_DAILY_CAP=80）三端一版口径）。| ⭐R96g1al 1.4.20→1.4.21：无 A3 出口补评论分级明细表批（⭐2026-11-02 用户复测 1.4.20 后拍板「这种没有A3+和A3的要不要也展示至少满15条？只不过A3+和A3、A2、A1按照优先级展示而已？我之前设置20条就20条」——1.4.20 收得太狠只给一句结论+计数，用户要看到评论明细本身）：阶段 0 无 A3 出口=一句结论+【评论分级明细】表+指路一行——明细与【客户跟进卡】六列同款同构（| 档位 | # | 评论 | 客户 | 回评 | 私信 |，回评/私信全 —），排序编号同一套全局规则（🟢→🟠→🟡→⚪ 优先级、档内 👍 降序、从 1 连续编跨档不重起）；无 A3 时 🟡⚪ 升格进默认表，默认 ≤20 行、不足 20 全量全列零截断，超出计数行括注「另 N 条未列」；阶段 0 附无 A3 出口整段照抄模板（作品详情+结论+明细表+计数行+指路）；阶段 1 跟进卡规则补例外指向「🟡⚪ 不进默认表（无 A3 场景例外住阶段 0）」防两规打架；三禁保留（禁痛点主题表格/整理选题素材/存选题行动项——明细表=原始评论逐条列表禁改写成主题归纳）。| ⭐R96g1aj 1.4.19→1.4.20：无 A3 出口收紧+标题互动根治批（⭐2026-11-02 用户两报——报2「怎么是痛点主题？这是谁设计的？」：closer 无 A3 时自建痛点主题表格+存选题行动项越界代劳，阶段 0 改一句结论+指路一行（换篇栗子触达/深挖痛点转洞察栗），禁自建痛点主题表格/整理选题素材/代创作栗出存选题行动项，计数行尾注同步「🟡 分流口径住阶段 0（指路不代劳）」；报1「还是查不到标题+互动不全面」：配套引擎批 ADAPTER 1.2.159——comments 前置详情补采（库缺标题同 tab 先采详情落库再采评论，宿主直采评论不再命中空 title 脏记录）+note_meta 互动四项透全 collect/share）。| ⭐R96g1ai 1.4.18→1.4.19：宿主四报批——①comments 回执补 note_meta（作品标题真源，修「未设标题·xx」自拼）②报编号即发（两道门→一道门：【发送身份】卡降级异常兜底：复用旧稿未带直核表/切号/登录态掉线三种场景才出）③预热行砍「也可以自己复制发」尾巴（插件引擎代发=默认唯一执行路径，自发只剩代发失败兜底）。| ⭐R96g1ah 1.4.16→1.4.18（跨 R96g1af 1.4.17 代发红线退役批）：五问批三件——①新工具 leadsradar_touch_settings（触发词「栗子触达设置」用户拍板命名，查改触达设置与 options 同源，第七节）②稿源确认（生成前 get 手动稿现状，已设必问「固定稿还是 AI」，未设不问直接 AI）③账本渠道留痕直答（lead_records 每条 touched_reply/touched_dm，谁被回评/私信过直接答禁猜渠道）｜⭐R96fc 存量注：跟进卡状态列四态（—=未触达/⏳=待执行/⏸=等下批/✅=已发出已核验已留痕），初卡全 —、阶段 4 直接在本卡更新状态禁另起独立执行单，数据同源 lf_leads 账本+会话进展；②展示规则旧「🟢≤5/🟠≤5」退役改「默认 ≤20 行、🟢 优先全列、🟠 接序号补足到 20 行，🟢🟠 合计 ≤20 全列零截断」——261101 抖音实测 🟢7 只列 5 条、用户喊「栗子回复 1-6」时 6 号不在表上断层全靠交代行救；🟡⚪ 仍不进默认表喊「看全量/看黄色」补展示；③纯私信块名分家=【私信任务】（纯回评/混合=【回复任务】，身份三行表同款同走），【私信内容】表补「对方评论」列四列与【回复内容】完全同构（旧三列话术贴哪条评论写的无从对照）；④阶段 4 重写=【触达执行单】退役，发完每批直接重渲染跟进卡（帽行「第 N 批完成 X/Y」+状态列现填，只列触达涉及行不必回贴 20 行全量；状态四态 ✅/⏳/⏸/—，回评私信两列各管各渠道同客户两渠道则两列各 ✅）；跨作品【线索账本】查询不属合并范围；⑤纪律表格豁免跟进卡固定 6 列 ≤20 行。纯 SKILL 批引擎零改动，生效前提=宿主经 get_latest_skills 更新 closer SKILL.md） ⭐R96fb 1.4.14→1.4.15：代发四步核+先核后标批（⭐2026-11-01 用户复测「继续做回复测试你看看问题在哪」——宿主代发第 1 条三连环误报实录：误点「取消」收起输入框→二次输入落进笔记总评论框（绑错对象）→按钮灰态硬当已发，报「✅ 已发出已留痕」后用户网页端没看到回复打穿，宿主认错改账本重发才成功；SKILL 四缺口实锤=「发一条标一条」没定义「发出」判据/留痕早于核验/无输入绑定核验/无定位指导；修=①「发一条标一条」改「先核后标」——发送成功唯一判据=发送后核验页面（目标评论楼下真实出现当前登录号该条回复才算发出），顺序钉死核验通过→mark_replied→回执 ✅，未核到禁报 ✅ 禁留痕，误报须认错+账本改回待处理+重走流程；②新增「代发操作四步核」条（定位提速：页内查找 Ctrl+F 搜客户昵称直达禁滚动逐层扫+视野内相邻目标一次定位挨个回批内间隔照留/绑定核验：输入前确认挂载对象=目标评论楼中楼回复框 placeholder 带客户昵称防落进笔记总评论框/发送：按钮灰态=没绑对回②重核禁硬点、发送取消相邻点前看清/核验：等 1-2 秒核楼下出现登录号+成稿文字核到才算发出接写账本）；③阶段 4 状态三态 ✅ 收紧=四步核通过页面核到真实回复才打勾核不到标 ⏳ 如实说；用户第 2 问「回复速度跟什么有关要不要每次重新定位」固化进四步核①——页内查找+一片一片回不逐条从头滚，强制间隔 30-60s 是风控纪律大头不能省（MC v0.4 实证 45-90s 更长）） ⭐R96fa 1.4.13→1.4.14：分级词表 B2B 补齐+节奏对齐 MC 实证批（⭐2026-11-01 用户复测三问——①「🟢 15 > 🟠 7 这数据对吗？A3+绿色比橙色还多？是不是表述混淆了？用户澄清绿橙=A3+/A3 并列档非包含关系」：本地库 78 条人工判级绿=15 吻合数字本身对（服务营销帖问价/私我/怎么合作类硬意向扎堆绿>橙是真实构成），但橙被压扁（人工判 ~13 宿主只判 7、🟡 虚胖至 20）——根因=第四节 🟠 特征词全是 C 端消费词（想买/纠结/蹲一个），B2B 服务评论区软意向词「了解一下/怎么做/有吗/XX 行业获客」全缺失按「拿不准就降档」被批量压进 🟡；修=🟠 词表补服务/B2B 语境词+三条边界判例（绿橙并列独立计数非包含/向博主求方案=🟠 不降 🟡 对齐插件引擎 A3_SOLICIT_PATTERNS/同行引流自荐=⚪ 禁进 A3 按帖型语境区分）；②「两批之间 30 分钟？有点夸张了吧？你查下 MC 的去触达批次间隔和组间间隔」：实查 Chrome 实装 MC v0.4.0（知识库快照滞后只记到 v0.3.2）新增 comment-outreach+utils/outreach 模块=插件端自动私信，OUTREACH_POLICY={executionGroupSize:5, maxDailyRecipients:100, minDelayMs:45s, maxDelayMs:90s}——发送间隔 45-90 秒/条、执行组 5 人检查点、组间零额外等待（UI 原文「发送间隔 X–Y 秒，跨组同样生效」）、日预算默认 100 可调 1-500、风控反应式=遇平台验证/限频立即停等人工；修=批间 ≥30 分钟→≥5 分钟（六处全改）+补单账号日触达总量 ≤100 人纪律+节奏纪律行注明 MC v0.4 实证依据；③断层隐患：名单只列 🟢1-5/🟠16-20 截断段，用户喊「栗子回复 1-7」时 6、7 号是未展示的全量名单条目回复表冒出名单上没有的客户无从对号，修=阶段 2 补「点名超出已展示名单段必带一行交代」规则（交代行格式+禁静默换人禁重编号）） ⭐R96ez 1.4.12→1.4.13：触达合并本地库批（⭐2026-11-01 用户复测质疑「（🟡 7 · ⚪ 2，这数据对吗？）」——上轮同篇 🟡 8 · ⚪ 35 本轮骤降 ⚪ 2：capture_note_comments 默认 limit=30 只覆盖热门区，触达重跑不合并本地库时名单 34→23 条、⚪ 35→2 集体缩水；实查本地库 78 条，手工对热门前 30 条分级=🟢12 🟠11 🟡7 ⚪2 与宿主回执吻合，数字本身对但缩水呈现歧义）：阶段 1 采集段改写——limit 建议显式传 100+（默认 30 只覆盖热门区）+ 采集后必调 query_local_data(source="comments", note_url=链接) 拉本地库已有评论按「作者+评论内容」去重合并，分级与名单永远基于合并后全量，【客户跟进卡】「已采 N」=合并去重后全量分级基数） ⭐R96ey 1.4.11→1.4.12：档位计数行温度计四色版+whoami 传 open_url 批（⭐2026-11-01 用户复测两反馈：①「这里显示有问题，应该只显示绿色和橙色注释，黄色白色应该用温度计方式一起呈现，你看下别的地方咋呈现的对齐下」——旧规计数行自带「🟡 N（转内容选题）」括注，修=档位计数行温度计四色版「🟢 N · 🟠 N · 🟡 N · ⚪ N」：🟡⚪ 恒裸计数禁任何括注（与探一下【线索快扫】四宫格同序同款全端统一色板）、🟢🟠 可各带 ≤20 字短括注、🟡 转内容选题分流逻辑住能力 1 首段不占计数行；②「另外读到了插件，但是不能唤起网页？」——whoami 调用方式升级：出稿前必调 leadsradar_whoami 且传 open_url=作品链接，没开任何平台页时插件自动前台代开作品页再读登录态（成功回执前缀「（已自动为你打开页面）」），「没开页→引导用户手动开页」分支退役、只剩「代开后仍读不到→登录/稍等复查」引导；帽注释③/规则段③/复用段（⭐R96ey 版）三处同步。配套引擎 executeWhoami 代开分支+mjs inputSchema/dispatch（ADAPTER 1.2.153）） ⭐R96ex 1.4.10→1.4.11：whoami 前置阻断闭环批（⭐2026-11-01 用户三反馈：①「回复账号要确认当前平台的登陆账号啊，不然总是后知后觉的才发现，这一步要核实是否有账号登录，以及是哪个账号，不然回复主体错了，或者没有登录，不至于事后。如果需要登录，也要本步让用户登录」②「浏览器和MCP的指引是否总保持一致？」③「回复账号是不是叫回复主体更好？」——AskUserQuestion 四选一拍板「回复主体」）：【回复任务】三项直核表升级——③行名「回复账号」→「回复主体」+whoami 核不到=本步阻断不出稿（按引擎 message 两分支引导：没开平台页→「先在浏览器打开小红书/抖音任意页面，开好说声复查」、开了未登录→「先在该页面登录（右上角能看到自己头像=已登录），登好说声复查」，复查核到才出稿），「发送前在平台页面现场核（未核不发）」事后话术退役；核到多平台按作品平台选对应账号；②浏览器行不写死 Chrome——browsers 是磁盘扫推断（Chrome/Edge 各 profile、10s 缓存），whoami 与 MCP 连接物理同源恒一致，核到什么浏览器写什么。配套引擎 executeWhoami 两分支+missNote（ADAPTER 1.2.152） ⭐R96ew 1.4.9→1.4.10：三项直核表精简批（⭐2026-11-01 用户复测三反馈——①「回复账号还是没检测到我的chrome登录的平台所在账号呢？」②「浏览器里面出现一些用户不太理解的语言呢，尽量通俗易懂一点」③「回复作品里面也多余一些信息，只展示标题和作者平台即可，这两个条路感觉有点多余」）：【回复任务】表五项砍三项——①回复作品行只写《作品名》（作者 @X · 平台）禁「现核」「回评挂在这篇下」等多余修饰；②浏览器行通俗化写「Chrome（插件所在浏览器）」禁 extension.browsers/插件上报/profile 技术黑话；③回复账号行升级 whoami 现核——出稿前必调 leadsradar_whoami（⭐R96ew 新工具，引擎 executeWhoami 从已打开的小红书/抖音页 MAIN world 读当前登录账号，零采集不占风控限额），核到直接填「⭐已核 @昵称（平台）」禁再列名下候选反问（列候选反问=没检测到，用户两轮实报根因）；whoami 查不到=用户没开平台页面，写「发送前在平台页面现场核（未核不发）」+一句引导先开页面再复查；是否本人判断不删逻辑只删行——whoami 核到的账号 vs 笔记作者，=作者表尾一句「（当前登录的就是作者本人号 ✓）」/≠作者「（注意：当前登录的不是作者本人号，回评会显示为第三方回复）」禁占独立表格行；发送留痕行删（账本留痕阶段 3 触达时自然发生）；requires 加 leadsradar_whoami；复用早前稿规则段同步（三项+双工具现核）。配套引擎 executeWhoami+mjs 工具注册同批（ADAPTER 1.2.151） ⭐R96eh 1.4.0→1.4.1：三稿全展示批（⭐2026-10-31 用户拍板「明明消耗了却不给用户看，有点浪费ai积分，这是bug。浪费钱的行为应该被杜绝」——云端 quick-reply 一次生成 3 候选已占 1 次 aiReply 日限，旧「一次一稿」只展示 1 条=另 2 条白生成浪费积分）：①阶段2表格每序号铺 3 行候选（a ⭐主推/b/c，客户/评论列只 a 行填省宽）；②挑稿制——用户说编号（如「用 1b」）即选该稿，不说默认 a 主推；③重新生成口径补死——3 稿都不满意重新生成=新占 1 次日限（生成前告知，旧口径池尽换稿消耗不告知的缺口一并堵死）；④样板表/尾句/规则行三处同步，废弃「一次一稿（3候选为后备池说换再给）」旧拍板。纯 SKILL 批引擎零改动 ⭐R96dr 复检补拍（同日·未发布并入本批）：输出全表格化与探一下流程A同构——【作品详情】标签表总是保留/【客户跟进卡】档位#评论客户四列表/阶段2确认【回复内容】【私信内容】表格化+【后续执行】批次表/AI话术「基于个性化数据库生成」每次必带一句/档位计数一行/栗子仪式对齐R96ab（✅符号+贴任务开工语+零过程旁白+免费采集不念额度+收尾语后零输出）。原批拍板： 1.3.9→1.4.0 触达回评互动闭环批（⭐2026-10-30 拍板）：①前置门槛——触达/回评必须先有评论采集（没有就先推「栗子触达/探一下」采评论），只推 A3 及以上评论；②序号点名制——A3 名单带序号（1/2/3…），用户按号选要回评/私信谁；③确认制四阶段——采评论→序号名单→选号生成 AI 建议→用户确认批次与文案→才执行（分批每批≤5 条，批内间隔回评 30-60s/私信 90-120s，批间≥30min）；④探栗 AI 默认（个性化线索库：贴评论原文+A3 档位+followup 记忆）+触达后 lf_leads 完整记账+对话端任务进度表格（完成打勾+下一步）。新三工具：leadsradar_comment_reply（AI 回评 3 候选，与插件评论弹窗「AI 回复」同源同池）/ leadsradar_mark_lead（标已回留痕/已留资/流失/重开，云端 lf_leads 与插件收件箱同一账本跨宿主可查）/ leadsradar_lead_records（查线索账本四档筛选+统计，全终端聚合）。「栗子回复」「栗子触达记录/谁还没回」触发词转正。⭐R96cs 1.3.8→1.3.9：AI 私信话术开窗（⭐2026-10-28 用户拍板「先把我们能做的做好再测试宿主能不能代发」——成交栗触达链与插件评论弹窗「AI 私信」打通：①新 MCP 工具 leadsradar_dm_reply（19→20）与插件 reply-inbox fetchDmReplies 同源同链（POST /api/generate/dm-reply，Bearer jwt）——comment_text 必填+commenter_name/note_title/platform/intent_level 选填+stage first 首触/followup 追问+lead_id 二触以上传，fallback 自动建档 lf_leads（⭐233 口径）+aiReply 会员日限；②插件端 agent-tasks.ts executeDmReply（executeGetDailyReport 同范式）+分发注册 mode=dm_reply+UNSUPPORTED 列表补词；③web dm-reply route 补 fallback 评论原文兜底（Agent 链评论只落本地库 r96f 口径云端 lf_collected_comments 无该评论 lead.comment_id 空必 404「评论原文缺失」断链——commentContent 空时直接用 fallback.comment_text）；④SKILL 触达包升级——私信段已登录调 dm_reply（3 候选挑 1 贴评论原话成稿照抄即发），未登录/429 降级宿主自写（原格式保留）；触达包每条带评论者主页 URL（采集回执 author_url）；宿主代发纪律不变（≤5 条/不改写），代发能力待实测。引擎+web 混合批：重载插件+web 部署+npm 发版三件全做。⭐R96y 收尾栗子发言（全端规则「开头结尾都是栗子发言」，与开工语对仗）：「名单到手，按节奏跟单 💰」→「🌰 **成交栗**：名单到手，按节奏跟单 💰」（1.3.7=⭐R96n slogan 用户定版开工语「捞单去，话术随身 💰」→「线索成交，一触即达 💰」（漏斗末环成交，「触」嵌精准触发词栗子触达）（1.3.6=⭐R96m 同上定版）（1.3.5=⭐R96f 同上定版）（1.3.4=⭐R96e 头像化）
+  helper: "1.4.49", // ⭐R96g1ba 1.4.48→1.4.49：日报样例行数即规格加固（最新线索样例 2 行→3 行+排满 20 行省略行标注、爆款榜单画出真实表头+列满 12 行标注——与 closer 实报「20 条只显 6 条」同款病根：宿主照抄样例行数而非执行行数指令，样例占位行仅示结构非规格）｜⭐R96gq 1.4.47→1.4.48：日报表格规则+我的账号口径批（⭐2026-11-03 用户复测两反馈——①「最新线索没有按照表格的规则呈现啊」②「爆款榜单和最新线索应该是我的账号的数据啊，你看看web里面的日报」根因=引擎 buildLocalActivityBriefing 全量取数未对齐 web 端 execDailyBriefing ⓭1 口径+SKILL 最新线索段只定名单式未定表格：①最新线索升表格 |#|A3|客户|评论|来源|（A3 列 level 映射🟢🟠🟡+来源列 note_title 截前12字，与看板七列同规则）②爆款榜单+最新线索标注「我的账号」口径（引擎侧已限：线索 source_type=own、top_notes 限 self 账号作品——对标/截流线索与别人作品不进日报，未绑我的账号时爆款榜单恒空引导栗子扫我的号）；配套引擎批 ADAPTER 1.2.177 须重载插件）| ⭐R96gn 1.4.46→1.4.47：日报仪式化五件套（报头 📰 栗子日报 日期/段间 ---/段首锚点 🔴最新线索 🔥爆款榜单 🎯对标命中 ⚙️系统信息/关键数字加粗/报尾日期戳）+骨架样例定版+云端报/纯活动简报/空日报三形态同款（空态不素版）｜⭐R96gm 1.4.45→1.4.46：日报四段式统一形态（⭐2026-11-03 拍板回归原设计）——【最新线索】20 条（云端 a3Strong/本地 samples 前 20 带 level 圆点）/【爆款榜单】12 条（云端 hotHits/本地 top_notes）/【对标命中】12 条（radarRank/空态行）/【系统信息】（system+report 摘要+本地统计行），云端五段映射收骨架+出口锚点跟迁（存选题锚爆款榜单、触达锚最新线索）｜⭐R96gcj 1.4.44→1.4.45：日报 activity_report 本地活动简报渲染（无云端报 fallback 成主内容+空报新口径「count=0 且无 activity_report」+纯活动简报出口锚 samples note_url） | ⭐R96gba~gce 1.4.38→1.4.44 五连跳：gba 主副词总纲+gbb 主词拆解粒度+gbc 对外展示条款/栗子帮助主词化+gcd 栗子日报主词化/免费解读措辞修正+gce 日报两动作/登录出口｜⭐R96gaw 1.4.37→1.4.38：栗子查作品【下一步行动】下载/提取对调（五维评分拍板：下载 3.50 > 提取 3.20——查到旧采作品最常见诉求是拿素材，文案已在库里随时可提取）｜⭐R96gas 1.4.36→1.4.37：菜单/路由随 closer 更名批——菜单 00 行提示语定版「栗子在吗 · 栗子档案/版本/登录/帮助」+03 行「栗子触达/回复/私信 <作品链接> · 栗子我的线索 · 栗子触达设置」+description 触发词家族栗子守家→栗子我的线索（旧词兼认）+五节派活路由表成交栗行同步｜⭐R96gar 1.4.35→1.4.36：栗子守家路由注册——成交栗族触发词加「栗子守家」，管家栗菜单/转派同步（「回自己账号的评论/我的待回复」类意图转派成交栗）｜⭐R96gaq 1.4.34→1.4.35：栗子版本主词定级批（⭐2026-11-02 用户问「栗子版本也包含更新，栗子版本和栗子更新哪个作主词？展示格式是啥？」）——主词=栗子版本（栗子更新/版本详情/什么版本为同族别名等价触发），展示格式恒定=【栗子版本】七行对照卡（表名固定禁变体）——一节触发词行+三节模板条+description 三处同步｜⭐R96gap 1.4.33→1.4.34：栗子版本卡批（⭐2026-11-02 用户问「管家栗，栗子版本或栗子更新要不要加一个？查看版本详情？」拍板加）——注册「栗子版本/栗子更新/版本详情/什么版本」触发词（管家栗自己答不转派）+三节固定模板版本详情卡（探栗MCP+五技能+插件七行当前/最新对照：当前读各技能 frontmatter version/adapter.version/extension.extensionVersion，最新读 skills_latest/plugin_latest/adapter.update.latestVersion；latestVersion null 显「—未查」禁编）+菜单 03 行成交栗指令重排（栗子触达<作品链接>·栗子回复/私信·栗子触达记录/设置，与 closer 1.4.25 触发词族对齐）+派活路由表加栗子私信/栗子版本｜⭐R96g1ah 1.4.32→1.4.33：路由表补「栗子触达设置→成交栗」（⭐五问批 Q1 新触发词——查改触达话术设置：手动固定稿/AI 生成要求/字数/文档开关；description 家族词表/员工表 03 行/派活路由表三处同步防误接）｜⭐R96dy 1.4.31→1.4.32：菜单指令三处精简（⭐2026-10-31 用户复检菜单认知成本：①00 行「栗子档案/查/登录 · 帮助/教程」→「栗子档案/登录/帮助」——栗子查与栗子档案包含关系撤菜单不撤触发词、帮助/教程语义重复并一词「帮助」；②成交栗行删「/谁还没回」口语别名撤菜单不撤触发词；③洞察栗行「栗子研究/复盘 <对象>」拆「栗子研究 <作品/账号链接/关键词>」·「栗子复盘」两组——研究=外部对象拆解、复盘=我的账号专属动作，并写一组易误导） ⭐R96dw 1.4.30→1.4.31：菜单 00 行删「权益」+观察期语义同步（⭐2026-10-31 用户问「栗子在吗、栗子登录、栗子权益是一个东西？删一个删哪个？」拍板：三个不是一个东西——在吗=报到+技能自检入口、登录=配对登录动作（未登录唯一入口）、权益=档位/到期/积分查询；登录与权益输出同款三区块模板（⭐R96cu）重叠最高，删「栗子权益」——撤菜单不撤触发词（R96du 查对标库先例：喊「栗子权益/栗子会员」照常按三点五固定模板答）；另 description 转派清单观察期改口「命中条件对两端生效、观察期为云端监控观察窗」）。⭐R96dv 1.4.29→1.4.30：转派清单同步（radar 1.2.57 命中规则开窗批）——description 转派清单补「命中条件/观察期（⭐R96dv 命中规则开窗，对两端生效需登录）」+遇「改命中条件/观察期」类意图直接转派情报栗，L210 派活路由表情报栗行同步。⭐R96du 1.4.28→1.4.29：报到菜单精简（⭐2026-10-31 用户拍板情报栗指令列简化为「栗子加/删对标（及监控），栗子扫对标/扫我的」+管家栗自己上表 00 行；查对标库撤出菜单——与栗子档案同属「查已有」包含关系，触发词照常认能力不丢；禁造「栗子设置」泛词——未注册且与管家栗教程/设置问答路由打架，设置入口一律用真触发词并写「栗子扫描（及监控）设置」）——【AI员工】表 00-04 五行（00=管家栗前台经营者非链路工位，能力语与开场定位语同款）+情报行四组精简+L73 栗名呈现规范注记。⭐R96dt 1.4.27→1.4.28：转派清单同步（radar 1.2.56 扫描/监控设置升级批新注册「栗子监控设置」→情报栗）——description 转派清单补「栗子监控设置→情报栗——与栗子扫描设置同路（本地扫描条数/评论采集开关与云端监控回显）」，遇「扫描监控设置/云端监控频率」类意图直接转派情报栗禁答办不了。⭐R96dr 1.4.26→1.4.27：转派清单同步（closer 1.4.0 触达回评闭环批）——「栗子回复/AI 回评/栗子触达记录/谁还没回/未完成任务」类意图转派成交栗；管家栗自己也能直接答线索账本四档统计（leadsradar_lead_records 轻查询），深度触达编排仍归成交栗。⭐R96dq 1.4.25→1.4.26：转派清单同步批（radar 1.2.55 新注册「栗子扫描设置」→情报栗）——description 转派清单补「栗子扫描设置→情报栗——扫描规则（首扫/复扫条数、深扫评论开关与上限）的查看与修改也是情报栗的写操作」，遇「改扫描设置/首扫多扫点/复扫条数」类意图直接转派情报栗禁答办不了。⭐R96dm 1.4.24→1.4.25：转派清单同步批（⭐2026-10-30 用户要求「栗子加/删/查/扫对标（或我的号），栗子加/关监控」七词盘点——六词早已注册，唯「栗子查对标」未注册；radar 1.2.52 新注册「栗子查对标」→情报栗查对标库路径，helper description 转派清单同步补栗子查对标→情报栗，边界=带「对标/监控」字样归情报栗）。⭐R96dl 1.4.23→1.4.24：转派清单补全批（⭐2026-10-30 用户实测「云南阿叁（旮旯食堂）取消监控」被管家栗误接答「办不了只读不写、请去插件手动关」——根因=description 转派清单停在 R96as 四词，R96bj 删对标/R96ca 关监控/R96ap 查对标库等后续动作词全漏，宿主误路由后管家栗无转派依据只能拒办；修=清单补「栗子删对标/栗子关监控→情报栗（取消监控/别盯这个号了/把监控关了同认，对标与监控增删开关全是情报栗写操作）」+员工表情报栗行指令列同步 + 落死禁令「禁止答办不了/禁止指引手动操作，一律转派情报栗带账号名」）| ⭐R96dg 1.4.21→1.4.22：九行额度表禁删行（⭐2026-10-30 用户验收三卡实测「栗子权益」表抄漏第九行 AI 积分余额——旧硬规「填八行额度表（…+AI 积分余额行）」计数含糊，宿主按八行抄漏积分行；改「九行额度表禁删行：八行额度+第九行 AI 积分余额（数字取 account.aiCredits 真值，null 显「—」，禁照抄样例 1150）」）| ⭐R96de 1.4.20→1.4.21：档案删体检行+null省略批（反馈2a 档案23:09「到期 未拿到（接口没有返回…）」失败感文案→拍板 null 字段直接省略、下次拿到自然出现；反馈2b 体检两段⚠️→拍板「档案是资产清单不是问题清单，不抢细分栗子的活」整行删；样例残留 2027-10-17/对标位4/24 修正为 2026-11-26(还剩28天)/4/8；反馈1 催续费句+旧三行权益=宿主卡1.4.19旧技能产物，真源已净无需改）| ⭐R96da 1.4.19→1.4.20：权益明细+链接可点批（用户实报「1、有Bug，数据怎么没链接呢」「2、【会员权益】不对啊…提取文案的次数、AI回复此时等等」）①【会员权益】三行空泛话术→九行额度明细表（提取文案 100 次/月·AI 回评/私信同池 25 条/天·换选题 15 次/天·选题评分 30 次/月·复盘周报 1 份/周·监控位 8·对标位 24·账号组 2 组·AI 积分余额，真源 web src/lib/daily-limits.ts 抄录「档位额度常量表」禁改数禁编，usageLocal 非空括注今日已用 N）②链接可点铁则——一切 web/官网地址写完整 https:// 裸 URL 独立成行（membership/topics/farm/creative/faq/academy/leadsradar.cn），禁反引号包域名（渲染成 inline code 点不开）③pickAccountSnapshot 白名单 7→10 字段补透传 email/loginProvider/usageLocal——插件侧 local-agent-connector 十字段早已返回但被 mjs 白名单丢弃，修「邮箱/到期接口没返回」假象（DB 真值齐全：pro_monthly/2026-11-26/1150 分/8 监控位）。⭐R96cy 1.4.18→1.4.19：管家栗六反馈批（⭐2026-10-29 测试1/2/3 实报）①档案云端资产开窗真数（拍板「云端资产没有开窗」）——accounts 源回执新增 cloud_counts（选题仓库五段明细/跟进线索/创作成片，/api/pipeline-counts 加 Bearer 双鉴权+creative 段），缺省退「登录后可查」禁编数②权益行进档案（拍板「到期日期和账号权益也没开窗吗？还有监控位置、对标位置、每日使用量」）——档位/到期/积分（slots 接口扩 plan_expires_at/ai_credits+refreshPlanEntitlements 回填，修「到期日期没拿到」）+监控位/对标位（库况行）+usageLocal 今日用量行③邮箱口径（拍板「微信登录的没有邮箱咋显示」）——web 端 wx_*@wechat.local 占位改发 null+login_provider，插件端旧缓存同款兜底，显「微信登录（未绑邮箱）」④总览不点名对标账号（拍板「不必额外强调除非继续问」）⑤帮助卡（拍板「没看到下一步行动/档位连接冗余」）——【下一步行动】三条（丢链接实操+leadsradar.cn/faq+栗子学院 academy）+禁附档位/连接段，「学院暂无」旧口径改学院上线⑥Agent 采集 tab 彻底后台零闪烁（拍板「能不能不要」——agent-tasks 五处前台改 active:false，推翻 r75 口径，节流风险实测监控）。上批 R96cv： 栗子档案重排+查类模板化（用户拍板「档案应包括对标/选题/报告，采集记录考虑值不值得，线索农场/创作工厂要不要，【下一步行动】也要有，每一类单独查都要表格+下一步行动」）：①档案总览=本地三真值行（对标账号 accounts/研究报告 reports/采集作品 works——定位「素材池」值得展示：采过的详情+评论都在库、下载/提取复用不占额度）+选题储备行（真源云端 R96bf 口径本地 works≠云端仓库禁充数，给入口不给假数）+表下云端指路行（线索农场 /farm=dm_reply 线索归档地、创作成片 /creative=web 创作工厂，本地无源禁编数）+体检行+【下一步行动】固定两条（栗子查细看入口+app.leadsradar.cn 云端资产入口）；②栗子查模板化——每类输出「完成行+表格+【下一步行动】」两段式与总览同构：查对标（|对标|平台|粉丝|监控|→扫对标/加监控）、查作品（|标题|平台|👍/💬|采集日|→提取/下载）、查报告（四类分组计数+最近一份→解读/新研究）、查评论（需带链接+A3 色点表）、查选题（本地无源直接指路云端真值禁 works 充数）。⭐R96cu 1.4.16→1.4.17：登录/权益固定三区块模板（⭐2026-10-29 用户实报「栗子登录」输出缺会员到期时间与会员权益明细+拍板「这类登录和会员内的要有固定展示模板【基本信息】【会员权益】【下一步行动】符合 UI 互动规范，栗子登录/栗子权益类关键词都要能路由」）：①三点五升「栗子登录与栗子权益」——登录成功/已登录幂等/权益问询三入口共用固定模板：三区块【基本信息】（昵称/邮箱/档位/到期两列表）→【会员权益】（你档位内已解锁，逐条一行：云端 24h 监控·监控位 N 个/AI 积分 N/额度更优；free 档改列登录可用项）→【下一步行动】（栗子在吗看连接任务+app.leadsradar.cn/membership 续费升级）；②模板硬规四条——三区块固定与创作栗同构/五字段一个不缺（到期必给：有值报日期+剩余天数、plan=free 写「—（免费档无到期）」、null 写「没拿到」禁编「长期有效」）/权益按档位列已解锁项禁「对比参考」（R96cr 口径沿用）/下一步行动固定两条；③路由全覆盖——description 注册「栗子权益/栗子会员」+「我的权益/会员到期/积分还剩多少」问句族，派活路由表管家栗行加栗子登录/栗子权益/栗子会员，第三节权益问答升「按三点五固定模板输出」。纯 SKILL 批零引擎改动。⭐R96cr 1.4.15→1.4.16：管家栗权益四案（⭐2026-10-28 用户实测「了解下我的详细权益」交付编造——pro_monthly 个人版被报「个人版（免费注册档）·无（长期有效）」，到期/积分/邮箱全无数据源自由发挥）：①引擎 readAccountSnapshot 扩权益五字段 plan/planLabel/planExpiresAt/aiCredits/monitorSlots（数据源=R96cm refreshPlanEntitlements 回填+配对登录/JWT 续期回填到期+消费回写余额键兜底 lf_me_cache）+mjs statusSnapshot account 白名单同步透传；②SKILL 权益硬规——档位/到期/积分/监控位一律照抄 account 字段，null=如实「没拿到，去插件个人中心看」，禁编「免费注册档/长期有效」注解、「会员额外权益对比表」（已是会员列「你已解锁」）；③FAQ 新增「怎么使用」四句口诀定版（探一下→加对标→下载/提取→触达）+拆「加对标=开监控」歧义（加监控独立词·会员权益），派活路由表同步拆词；④技能自检结果必须可见（全最新时连接行括号并写「MCP已最新·技能全最新」——用户实报报到块看不出自检做没做）。引擎批：插件需重建重载生效 ⭐R96cg 1.4.14→1.4.15：报到更新中提示（⭐2026-10-28 用户实报「栗子在吗更新很久，能不能给个提示，比如更新中之类的」——技能全文 60-80KB 拉取+写文件 10-60 秒静默干等像死机）：报到纪律「技能版本自检+自动更新」补两条——①发现有落后技能、动手拉全文之前，先输出一行提示「🔧 技能有更新：<栗名1> vX→vY、<栗名2>…正在自动更新（约 10-60 秒），稍等…」再逐个干活（多技能落后提示行一次列全禁逐个刷屏；长任务进度反馈不算 R96i 禁的实查旁白）；②只拉落后技能的全文——版本已最新的技能禁调 leadsradar_get_latest_skills（白拉 60-80KB 只会更慢）。⭐R96bz 1.4.13→1.4.14：多指令调度七规定版（⭐2026-10-27 用户实报「栗子提取+探一下 <同一链接>」双指令连做场景+拍板「1、2执行，多指令的时候如果指令有缺失或者冲突应该询问，如果太多指令不应该重复执行应该有个上限吧」——helper SKILL 第五节派活三段式后新增整段：①照单全收按说话顺序连做 ②各栗各段身份不混禁合成混合报告 ③失败隔离 ⚠️ 报因+下一个照常 ④重复指令去重禁白扣额度 ⑤缺失要问禁瞎猜 ⑥冲突要问禁自作主张 ⑦上限 3 个超出先列清单问优先级） ⭐R96as 1.4.12→1.4.13：触发词动作化换词 10 处——description 家族词（栗子下载/栗子存选题/栗子提取→创作栗；栗子加对标/栗子扫对标/栗子加监控/栗子扫我的→情报栗，旧词栗子入库/栗子对标仍认）、报到菜单【AI员工】表情报栗/创作栗指令列（情报加 `栗子扫对标/扫我的`、创作入库→存选题）、报到纪律合并式描述、空日报指路、体检行、派活路由两行、FAQ 四句话。⭐R96am 1.4.11→1.4.12：报到技能自检升级自动更新流（落后不再只指路——逐技能调 get_latest_skills 拿 content，coding 宿主直接写入 SKILL.md 原路径完成自更新，纯对话宿主出整体复制块）+重启防呆强化（adapter.update=updated-pending-restart 必提醒「完全退出宿主重开生效」——npm 换盘/自更新落盘后进程不热替换，MCP 侧已加磁盘对比保底根治节流盲区）。⭐R96u 1.2.45→1.2.46：①报到菜单剥🚧待开发行（用户复检「还是有这个尾巴…不要强调」——推翻 R96r 待开发行：待开发词并入指令列展示（成交栗 `栗子回复/触达`、创作栗 `栗子下载/…/成片`），菜单不强调、能力未上线应答「还在开发中」口径保留）+指令列增补监控/成片（情报栗 `栗子对标/监控`）；②创作栗下载交付三区块重构（用户复检三反馈：标题斜体独行段→【作品信息】两列窄表对齐情报栗【作品详情】；落盘散装行→【下载目录】三列表 |文件|格式|位置|+表下完整路径题注；尾部括号接续指令→【下一步行动】编号短句行与 radar 全端同规，推翻 R96o creator 括号式）——下载交付=完成行+【作品信息】【下载目录】【下一步行动】三区块平铺无总头；helper 1.4.10→1.4.11、creator 1.2.8→1.2.9 同批 ⭐R96t 1.2.44→1.2.45：报到菜单单区块（⭐2026-10-24 用户复检「下面的命令词重复，上面的不全」）——【命令词】四行区块整删，指令全并进【AI员工】表第三列合并式（情报 `探一下 <作品/账号链接/关键词>` · `栗子对标 <账号链接>` / 创作 `栗子下载/提取/入库 <作品链接>` / 成交 `栗子回复/触达 <作品链接>` / 洞察 `栗子研究/复盘 <作品/账号链接/关键词>`——家族词斜杠并写一格收全，两处重复源消灭）；表头「口号」→「能力」、「命令词」→「指令」；防重复条款（报到菜单每区块/每行只渲染一遍禁复读——用户实报宿主渲染完菜单后末尾又残影重复洞察栗行+待开发行）；helper 1.4.9→1.4.10 同批 ⭐R96r 命令词区加待开发预告行（⭐2026-10-23 用户拍板「栗子回复是直接去回复评论区，还不确定能不能做到，可以写一个待开发；另外增加一个栗子成片，也是在待开发」）：命令词区四行后加一行「🚧 待开发：`栗子回复 <作品链接>`（直接回复评论区）· `栗子成片`（视频一键成片）」——不占员工编号 01-04（编号只给已上线四栗），用户喊待开发词就答「还在开发中，先用 XX」别硬执行；纪律段「栗子回复」定位从「助记简写」改「待开发预告词」（上线前触达一律用栗子触达）（1.4.8=⭐R96q 报到菜单第三列「干什么」→「命令词」简略式（⭐2026-10-23 用户复检「把命令词替换干什么，然后命令词按照这种简略的方法来续写，后面的链接还是照常，列举各种类型的链接，前面我帮你写出来了」——用户亲拟四行简写）：①【AI员工】表第三列表头「干什么」→「命令词」，内容改用户亲拟简略式 inline code：情报 `探一下…链接`/创作 `栗子下载/提取/入库…链接`/成交 `栗子回复/触达…链接`/洞察 `栗子研究/复盘…链接`——职能描述列退役（口号已概括职能，命令词直接给用法入口）②【命令词】区四行展开列举各类型链接：`探一下 <作品链接>`·`<账号链接>`·`<关键词>`、`栗子下载 <视频/图集/主页链接>`、`栗子入库/提取 <作品链接>`、`栗子触达 <作品链接>`、`栗子研究 <作品/账号/赛道>`、`复盘我的账号`——以注册触发词为准（表格简写「栗子回复」是助记，正式词=栗子触达）（1.4.7=⭐R96p 报到菜单两区块定版（⭐2026-10-23 用户复检五反馈「洞察栗放第四个；表头员工改AI员工；基本情况改连接状态；四个栗子要不要加工号（求意见）；要展示四栗一句话Slogan+给个Tab就是命令词；不给复制」）：①报到菜单拆两区块——【AI员工】三列表（表头「员工」→「AI员工」，列=AI员工/口号/干什么）+【命令词】四行编号列表（栗名带🌰+指令 inline code，括号注只写「照着打就行」）②行序调整——情报→创作→成交→洞察（主获客链路排位：探线索→出内容→促成交，洞察=深度辅助殿后；第五节派活路由表同步调序）③表标题【基本情况】→【连接状态】④工号 01-04 前缀定版（`01 🌰 **栗名**` 形式，意见三条=工号感/排位可见/两区工号对应快扫，用户采纳）⑤四栗口号上表（情报「探一下，线索不错过 🔍」/创作「获客视频，一键生成 🎬」/成交「线索成交，一触即达 💰」/洞察「获客方法，一探便知 🧠」）⑥放弃复制诉求（推翻 R96n 复测「指令并进表格括号 inline code」口径——命令词区纯呈现，工号两处对应 `01`↔`1.`）（1.4.6=⭐R96o 两改：①头像禁图令范围注——本条禁的是远程图床 URL 的装饰图（头像/表情类，宿主管线必坏）；创作栗图集交付的本地 file:/// 素材图是用户要看的内容，属例外见 creator 动作 2，裂图自删降级②报到菜单「边界」注取消——radar【下一步行动】独立 code block 已退役改编号短句行，全端统一紧凑（1.4.5=⭐R96n 复测 报到紧凑化（⭐2026-10-23 用户复测反馈「删多余文案帮你管理各项数据和 4 个 AI 员工」「干什么跟提示词合并作注释」「复制的提示词占很长一串每个都是单独卡片块，有没有更紧凑的可复制格式」）：①定位语砍尾「，帮你管理各项数据和 4 个 AI 员工」——定位语一句收，管理职能报到块自己会说②8 个独立 code block 全退役并进「干什么」表格括号缀 inline code（推翻 R96l「一律独立 code block」口径：8 块占太长；宿主对表格内 inline code 虽无复制按钮，但指令短、照着打即可——边界：radar 流程输出【下一步行动】code block 不受影响，那是长指令复制即发场景）③表头注改「括号里就是试一试的指令，照着打或选中复制」④情报栗描述砍「评论区」三字（1.4.4=⭐R96n 报到开场定位语嵌入「经营你的AI获客团队」（用户定版五句之首，报到纪律新增开场定位语条）+派活示例开工语同步「探一下，线索不错过 🔍」（1.4.3=⭐R96m 派活示例同步）（1.4.2=⭐R96l 报到呈现四改（⭐2026-10-23 用户复测反馈「栗子：改为AI员工；情报栗这些前面加emoji🌰，未来五大栗子出现前面都要加emoji；探一下/栗子对标能不能改为一个复制的按钮？表格里面不能单独给复制按钮吗」）：①统称改「AI 员工」——开场「4 个 AI 栗子员工」→「4 个 AI 员工」+【栗子报道】→【AI员工报道】（「栗子」一词只活在触发词家族「栗子X」与唤醒词里——路由机制禁改禁加 emoji）②栗名呈现规范——凡栗名（情报栗/洞察栗/创作栗/成交栗/管家栗）在用户可见输出出现前面一律 🌰（报到表格第一列🌰**栗名**；消息流前缀 R96f 已统一）③报到菜单提示词独立 code block 化——表格「试一试」列退役（宿主对表格内 inline code 不给复制按钮），8 句提示词各一块独立 code block 排表格后顺序对应（探一下/栗子对标/栗子研究/复盘我的账号/栗子下载/栗子入库/栗子提取/栗子触达——宿主对 code block 自带一键复制按钮点了就能用），模板外层围栏四反引号防嵌套提前闭合④纪律新增「栗名呈现规范」条（1.4.1=⭐R96i 报到 v3 简化：一句话介绍+小节化+头像退役+实查不出声+成本口径）（1.4.0=⭐R96f 派活三段式定版：任务复述+分配/专才栗一句开工语/完成汇报行——消息流弃图头像统一 🌰 短前缀）
 };
-var ADAPTER_VERSION = "1.2.21";
-var HOST_LABELS = {
-  "doubao-work": "\u8C46\u5305\u5DE5\u4F5C",
+// ⭐R79b 插件商店最新版：插件发版时同步 bump（与 SKILLS_LATEST 同一维护纪律）——管家栗对照
+//   extension.extensionVersion 落后时提醒用户手动提速更新（商店自动更为主）
+const PLUGIN_LATEST = "1.0.0";
+// ⭐R96g1bb 卫星版 frozen 判定豁免清单（261103 用户实报「栗子日报」误报 PLUGIN_FROZEN 根修刀 B）：
+//   与插件端 local-agent-connector.ts 的 FAST_LANE_MODES 同源同步（维护纪律：插件端扩容时同步这里）。
+//   快车道工具型任务（日报/账本/话术/设置等）执行期天然零协议消息（无 progress 心跳），执行慢
+//   （云端 fetch 抖动）≠插件冻结——「任务期零消息」对这类任务是常态不是死亡证据，frozen 判定
+//   必须排除，否则结构性误判（实报：lead_records 同通道刚成功、几十秒后 get_daily_report 慢就
+//   被误诊「Chrome 休眠冻住」，用户被指引点 Chrome/重载插件全是无效动作）
+const FAST_LANE_MODES = new Set([
+  "query_local_data", "claim_pending_result", "save_topic", "add_monitor",
+  "remove_benchmark", "pause_monitor", "scan_settings", "get_daily_report",
+  "dm_reply", "comment_reply", "mark_lead", "lead_records",
+  "touch_settings", "pair_login",
+]);
+// ⭐R96dh bump 1.2.113→1.2.114：深扫引擎窗 7→15min 对齐 + 轻任务快车道双修（⭐2026-10-30 用户实测「栗子扫我的号」双号 capture_profile 各吃满 15min 超时 + 超时后 query_local_data 也连续超时——数据实查已落库（肖予暄/小米 IndexedDB 命中），超时≠没采到；根因①引擎深扫窗 TASK_TIMEOUT_MS+2min=7min < 深扫单轮窗 10 条×45s+列表 60s≈510s 预算（R96df 放宽 mjs 15min 时没同步引擎窗），窗内炸了 content 侧还在跑白占队列；根因②connector task.start 是全局串行队列（drainTaskQueue 逐个执行），深扫占队期间 mjs 仅 30s 超时的救援通道 query_local_data/claim_pending_result 排队等死——超时报错引导「先查库」查库又被同队列堵死救援闭环自噬；修=agent-tasks.ts L3694 深扫窗 15*60*1000 对齐 mjs + local-agent-connector.ts 快车道：mode=query_local_data/claim_pending_result 纯本地秒回任务不入队直接并发 executeQueuedTask）
+// ⭐R96dg bump 1.2.112→1.2.113：helper 1.4.22 九行额度表禁删行配套（修「栗子权益」积分行抄漏——旧「八行」计数含糊，纯 SKILL 批引擎零改动）
+// ⭐R96df bump 1.2.111→1.2.112：深扫跟随扫描规则+命中优先补扫+媒体链接透出三修配套（radar 1.2.50+creator 1.2.30；引擎 agent-tasks.ts 七处+capture_profile 超时 7→15min 放宽）
+// ⭐R96es 1.2.146→1.2.147：closer 1.4.6→1.4.7 配套（复用早前稿禁带出旧模板——261031 复测实报：旧会话第二次栗子回复复用升级前旧稿，连旧两行空诺任务块+散落块外的身份提醒一起回归；钉死「复用只复用话术内容，块模板永远用当前版」，报「不新占日限」时自查直核四行齐全再交稿）。
+// ⭐R96et 1.2.147→1.2.148：深扫行结构化+五项直核表批（261031 新会话复测：R96er 三痕已好，残留四真问题落刀）——①引擎 agent-tasks.ts 深扫行拼行同时挂 summary.deep_scan_line（文本六条钉死七犯实证无效——宿主从 message 摘行必丢件，转结构化字段照抄、week_hits 先例，多号=各号回执各带各的）；②radar 1.2.68（深扫行数据源换 deep_scan_line 字段逐字符照抄+完成行「K 条」总笔记数禁丢）；③closer 1.4.8 五项直核表（回复作品/浏览器/回复账号/是否本人/发送留痕——用户拍板「这四个即可+留痕不删」；现核可执行化=出稿前调 connection_status；「是否本人」=回复账号 vs 笔记作者比较，261031 实报跨号标 ✓ 事实性错误）；④statusSnapshot extension 段补 browsers 字段（接 detectExtensionProfiles 透出插件所在浏览器+profile，closer 浏览器行的数据源）。含引擎刀，生效须重载插件。
+// ⭐R96eu 1.2.148→1.2.149：复测反馈三刀批（261101 用户复测+两反馈）——①closer 1.4.9「回复账号」语义纠正（用户拍板「应该是回复的平台账号，而不是探栗账号」——R96et 教的 extension.account.nickname 是探栗 web 登录号（@松鼠老板），非发回评用的平台账号，禁填此行；回复账号=浏览器登录的平台号，回执查不到，扫过「我的账号」可列候选请用户确认；「是否本人」比较链同步=平台账号 vs 笔记作者，探栗账号不参与比较）；②radar 1.2.69+引擎深扫行带号名前缀「深扫（@号名）：」（261101 实报两行深扫分不清谁是谁，取 data[0].author_name）；③「我的账号自带云端监控」口径精确化（用户质询「属实吗」——自带=绑定即建 is_self 监控条目属实，但云端自动盯盘是会员权益漏了前提，引擎 profileSelfNote+radar 两处同步补「开通个人版/团队版即自动覆盖」）；另复测判定：R96et 四刀全生效（K 条没丢/深扫行齐/浏览器真核值/是否本人判跨号）。引擎批生效须重载插件。
+// ⭐R96ev 1.2.149→1.2.150：复扫只追新发布批+我的账号监控解耦批（261101 用户两反馈）——①深扫复扫「补老作品池」根修（用户实报「一直在测试最新作品都深采过了，怎么还又深度采集？」：Agent 侧 maxCount=30 列表窗大而旧复扫只排「已扫」，首扫干满 first 条后列表第 21-30 位老作品每轮被当增量补池、content 侧还按互动量降序专挑热门老作品——与监控页协议错位（监控页复扫 maxCount=rescan 列表窗只看最新几条，排除已扫=真·新发布）；修=新增 lf_agent_seen 账本每轮记列表全量作品 id（id+platform_note_id 双变体、容量 1200、skipWhenAllExcluded 跳过轮同样记账），复扫 excludeIds 扩为「已见过∪已扫」只追新发布、无新作品整轮跳过、首扫不排除保持建池干满（失败重试仍首扫语义），老作品深采只在首扫建池发生；「池进度 A/B 未满下轮自动续/深扫池已满」两态尾注退役改统一「已深扫累计 N 条，下轮只追新作品」（pool_total 透出删除），深扫行去「最新」字样（首扫互动 Top 场景本就不最新），无新作品行改「老作品已建池、新作品未发布」，设置回执阴阳规则句同步「只追新发布作品」；②「我的账号自带云端监控」口径彻底解耦（用户拍板「我的账号是免费功能，监控是付费功能，这两者完全不搭界」——引擎五处：扫我的号 profileSelfNote/add 幂等回执（不再教「重开自带监控」）/重开三态话术/self 防线转述，R96eu「开通会员即自动覆盖」版与更早「自带云端监控」版均退役，改「免费功能+对标监控是盯对标账号用的互不相干」；重开路径功能保留只换话术）+radar 1.2.69→1.2.70 六处同步（阴阳规则新语义/深扫行示例/回退路径去最新/完成行示例/self 三态/我的段解耦）。引擎批生效须重载插件。
+// ⭐R96er bump 1.2.145→1.2.146：R96eq 复测判定+私信直核批（⭐2026-10-31 用户「继续看下有没有问题」+反馈2「私信应该直接核对，并且增加浏览器」——复测判定：R96eq 主目标达成（被 7 条帽截断的命中《宝宝接电话呀～》出完整快扫块：四宫格+代表评论+💎双高型+流量/线索指数）+R96ep M=四档达成（采到 6=🟠1🟡1⚪4，引擎 comments.length 修复生效）；残留三小痕全宿主呈现层：①A3 率 10.0% 被写「🟢 线索可跟」双错（应 🟠 线索可挖——10%~29% 含下界）②深扫行仍丢合计数「1 条」+🟢0+括号尾注 ③小米「本轮无新作品需深扫（最新作品都已扫过）」仍被缩成「无新增待扫」+两号合并分号句。修=纯 SKILL 批（引擎零改动）：radar 1.2.67 三处 A3 率档位词钉边界+词表封死（富矿/可挖/偏薄/噪音为主四词禁自造「可跟」；边界示例 10.0%=🟠 可挖/30.0%=🟢 富矿/3.0%=🟡 偏薄/2.9%=⚪ 噪音为主，流程 A 兜底/流程 D/流程 E 三处同钉）+深扫行 R96er 再钉两条（⑤四档四个全写含 0——0 也是数据；⑥无新作品行括号整段照抄禁缩「无新增待扫」，多号各自成行禁合并分号句）；closer 1.4.6 私信任务块直核四行（浏览器行=插件所在浏览器跟插件走/回复账号行=当前登录号现核现填标 ⭐已核/与笔记作者行=出稿时就标 ✓本人 ⚠️ 跨号、身份提醒散文案并入此行禁散落块外/发送留痕行=发出即写云端账本栗子触达记录可查——旧两行「发送前现场核」空诺退役，核不到才写待核；两道门不冲突：直核四行=出稿时信息透明，【发送身份】卡=发送前用户授权）// ⭐R96eq bump 1.2.144→1.2.145：命中快扫数据源换 week_hits 批（⭐2026-10-31 用户实报「7 天内命中 1 条（宝宝接电话呀～👍1572），本轮回执未带该篇快扫数据」——引擎双链候选池=latest_notes ≤7 条（buildLatest slice(0,7) 时间降序截断），周发布 >7 条的号命中但发布较早的作品（宝宝接电话 10-28 在 12 条中第 8 位）漏出 7 条帽，深扫集内快扫链查不到+补扫链候选同源双双接不到永无 a3 → SKILL「无 a3 不出块」宿主只能写「未带快扫数据」；修=agent-tasks.ts ①buildWeekHits 闭包构造 summary.week_hits 周命中全量（与 week_hit_count 同集合口径，含被 7 条帽截断的；补采日期回填后与 buildLatest 同步重建）②双链候选池换源 hitCandidates（week_hits 空回退 latest_notes hit 条目保旧行为）③补扫护栏 6 条/轮（候选池扩全量后旧「上限天然 ≤7」前提失效——fixed ≥5 规则小号周作品全中 50 条逐条开页 ~10s/条时长爆炸；成功件进 hitLedger 后下轮自动轮到更早的；深扫集内命中快扫零开页成本不受限）④latest_notes 7 条帽+时间序不动（R96ee 命中不置顶/R96ej 行数钉死不破）；配套 radar 1.2.66【命中详情】两处（流程 E 5.4+自查 4）数据源改 week_hits 优先+R96ej 三禁令「唯一数据源」口径同步）
+// ⭐R96ep bump 1.2.143→1.2.144：深扫行 M 字段根修（⭐2026-10-31 复测「栗子扫我的号」实报「采到 1 条 · A3 线索 1 条（🟢0 🟠1 🟡1 ⚪4）」——四档合计 6≠采到 1，宿主照抄引擎原文非抄写错：agent-tasks.ts 拼行旧取 cap.commentsSuccess || comments.length，commentsSuccess 是评论采集成功的作品数（content/index.ts per-note 递增、与 detailsSuccess 同族）恒优先于 fallback →「采到 N 条」的 N 恒=作品数与四档天然错位；R96ch 最早实报「深采各4条作品采到4条评论很难理解」同源老 bug，R96ej/R96en 三轮「宿主抄错数字」判定部分冤案；修=M 改 comments.length 与 quickScan 四档同集合恒自洽，引擎刀零 SKILL 改动——radar 1.2.65 钉死条款「M=四档合计」修后真成立；宿主侧遗留两小痕：①括号尾注「评论已入本地库…」丢失 ②「本轮无新作品需深扫（最新作品都已扫过）」被改写成「本轮无新增待扫」——复测再看）
+// ⭐R96eo bump 1.2.142→1.2.143：closer 1.4.4→1.4.5 回复任务身份块批（⭐2026-10-31 用户三问：①「增加回复任务的小标题，包括用什么账号回复，回复什么作品」——阶段2成稿前必带【回复任务】块：帽行《作品名》+回评/私信计数+两行表（回复账号=发送前现场核未核不发、与笔记作者=跨号标⚠️挂名代发）；②「为何只给一个客户和评论？逻辑看不懂」——数据没错（该作品评论区仅7条、A3线索仅1条🟠），错在宿主单条直出不交代筛选+SKILL无不带序号触发分支，补分支：A3多条>1必先出跟进卡名单问「回哪几条？报序号」禁自作主张挑一条、仅1条可直出但必带筛选交代「评论区N条·A3线索就这1条（🟠X @XX）」名单/交代二选一必带；③「私信也要同类的方式改好」——任务块回评+私信共用：混合点名一张块双计数、纯私信触发（「私 6」类）也必出块帽行只写「私信M条」不写回评0条、私信不带序号同款名单/筛选交代分支、【私信内容】表前必见任务块禁裸表直出+【私信内容】标题行尾同缀探栗AI生成一句话）
+// ⭐R96en bump 1.2.141→1.2.142：radar 1.2.64→1.2.65 深扫行三犯熔断（261031 三轮复测同款复发——「栗子扫我的号」宿主写「采到 2 条 · A3 线索 🟢0 🟠1 🟡1 ⚪5」：四档合计 7≠采到 2，「采到 M 条」的 M 被写成作品数 N；「A3 线索 X 条」合计数与括号尾注（评论已入本地库…池进度尾）全丢；多号自行拆成「A 号…；B 号…」自编结构——引擎拼行真源 agent-tasks.ts「深扫：{scanned} 条最新作品的评论区 · 采到 {comments} 条 · A3 线索 {strong+weak} 条（🟢🟠🟡⚪；评论已入本地库，作品卡可直接看…）」）——radar SKILL 流程 E 第 4 条 R96ej 硬化段后追加四条钉死：①采到 M=M 评论总数=四档合计（对不上=写错，作品数在 N 位错位即假数据）②A3 线索 X 条合计数（=🟢+🟠）禁丢 ③括号尾注整段保留 ④禁拆分号禁合并（引擎发几行抄几行，多号逐行追加完成行尾，禁合并成「A 号…；B 号…」自编）；自查完成行条款补同款短引防口径分叉。另记引擎侧观察项：两轮 6 条命中 0 a3 快扫块（R96df 命中优先补扫「正常都带」未兑现，宿主未编造合规） ⭐R96em bump 1.2.140→1.2.141：closer 1.4.3→1.4.4 代发平台未登录撞墙降级（用户问「没登录平台账号的撞墙方案？会出现扫码等卡点吧」——会：小红书/抖音网页版未登录强制弹登录框·默认二维码扫码可切验证码，评论区不渲染评论框找不到；旧纪律②现场核只写「查到填卡」没写「查不到怎么办」，宿主撞墙典型错误=乱点弹窗/对二维码干等/误报「发送失败」）——纪律②扩为现场核三态（同号✓/跨号⚠️/平台未登录❌）：未登录=【发送身份】卡填不出一条不发，走与浏览器控制未开同构的降级交付（交代「登录得你本人来·页面有二维码手机 App 扫一下」+待发成稿+两条路：登录后说「登录好了」→重核出卡确认后发 / 复制成稿自发发完说一声同样留痕）；登录三不做（禁碰登录弹窗——扫码页签/验证码切换/关闭键一律不点、禁干等扫码、禁误报发送失败）；「登录好了」=重核触发词禁拿登录前旧状态直接发；⑤会话级一次补「平台登录态掉线（页面再弹登录框）=身份失效重核重确认」；预热行不加平台登录（预热时点浏览器未开不可知登录态+日常基本登录着+真没登录有三态兜底，与「报到禁提示」同逻辑：不可知的依赖不提前念，撞到执行点完整交付） ⭐R96el bump 1.2.139→1.2.140：closer 1.4.2→1.4.3 代发设计两定案（用户追问：①「MCP 确定的浏览器是不是应该启动的浏览器」——是，两级真源定序：探栗 MCP 设置固定的默认浏览器（preferredBrowser）> 插件实际所在浏览器（detectExtensionProfiles 探测，断开诊断话术透出；已连接态 connection_status 不透浏览器名——列引擎侧观察项：可结构化下发省宿主猜）> 问用户；补隐藏依赖：宿主浏览器控制扩展必须装进同一个浏览器（261031 实测扩展在 Edge、插件+登录号在 Chrome=开 Edge 白搭，禁将就开别的浏览器）②提示时点拍板「意图点预热、执行点完整交付、报到禁提示」——阶段 2 确认表后加一行轻提示（确认后由我代发·需浏览器控制·也可复制自发；仅有浏览器控制能力的宿主带），报到/探活/名单阶段禁提示防噪音）
+// ⭐R96ek bump 1.2.138→1.2.139：radar 1.2.63→1.2.64（评论展示增 # 序号列全局连续：🟢→🟠→🟡 按档位优先级从 1 连续编跨档不重起、⚪ 不进表不编号、号按全量位次编截断只裁行不裁号段——261031 实测宿主档内各自编号 🟢1/🟠1 撞号，「栗子回复 1、2」无法表达 🟢1+🟠1）+ closer 1.4.1→1.4.2（①跟进卡 # 与探一下同源同号、全链一个号禁复号 ②代发三纪律→四纪律新增发送身份确认：浏览器跟插件走禁试错开浏览器/平台登录号现场核/跨号 ⚠️ 必标/两道确认门（话术稿+身份）都过才发/会话级一次——261031 实测 WorkBuddy 自查第三方号「大黄ai深度思考」没等用户确认直接发）
+// ⭐R96di bump 1.2.114→1.2.115：拉新提速+掉线根治双修——fetchRemoteText 串行三源（最坏 45s+）改并行竞速（unpkg 与 registry→jsdelivr 精确版任一命中即回，最坏 ~23s，修「栗子在吗拉技能卡几分钟」）；autoLaunchExtensionHost 弃 cmd start 别名链改直启浏览器 exe 完整路径（修「拉了 Chrome 40s×3 仍未回连」）
+// ⭐R96dj bump 1.2.115→1.2.116：helper 1.4.22→1.4.23 配套（档案样板行「对标位 4/8」→4/24 防照抄误导）
+const ADAPTER_VERSION = "1.2.182"; /* ⭐R96g1be 1.2.181→1.2.182：技能版本表云端实时化破死锁（261104 用户实报「格式问题还在」定谳实锤：主 Broker 1.2.167 旧进程数批未重启，内置 SKILLS_LATEST 表冻在 radar 1.2.70/helper 1.4.36，而 get_latest_skills 内容源 CDN 已 1.2.75/1.4.49——宿主报到对照表判定「无需更新」，五技能全锁旧版，radar 1.2.75 渲染黑名单从未入库；R96cz 同族病根当时只修版本号发现链未修表源）——新增 refreshSkillsLatestLive：复用 fetchRemoteText 源链拉 mjs 自身提取 SKILLS_LATEST 字面量，TTL 10min+失败保旧值+防重入；statusSnapshot 表源改 skillsLatestLive.table（connection_status void 后台刷新不阻塞报到），get_latest_skills 不传 name await 实时+latestKnown 同源——表与文同源 CDN，进程不重启也能发新版技能。配套：06-运维-自检 skill 新建（一键维护）+ skills 巡检误导批修复 | ⭐R96g1bd 1.2.180→1.2.181：三案批（261104 用户三反馈）——①「栗子日报拉不到（云端接口连续 3 次超时每次等满 60 秒）」定谳非新病：直连实测秒回（云端今天没生成日报+本地活动简报降级正常工作），时点性故障二选一（卫星中继半死=R96g1bc RELAY_STALE 解药已发待宿主拉新 / 云端 fetch 挂死=R96g1bb 引擎批 8s 超时+降级解药已发待用户重载插件），两解药均已在前两批 npm 交付、本批无新刀只交付用户动作（完全退出重开 Trae 主 Broker 1.2.167→1.2.180 探针应答生效 + 重载浏览器插件）；②「探一下作品详情格式又不对」radar 1.2.74→1.2.75 渲染违规黑名单批（WorkBuddy 实收五违例：作品详情加粗独行旧结构复发/小红书互动行带🔁违反转发守卫/评论展示退化为计数表旧格式/线索快扫缺四宫格与 A3 统计行+帽行多「指数」二字/结尾自创深挖钩子——同场成交栗 closer 同款表格执行全对，定性宿主对 radar 长模板执行不稳，SKILL 流程 A 模板纪律后钉死五条黑名单正例对照）；③「4 条小评论区回评纯表情评论『[表情][表情]』定位失败（明明看到评论区打开）」引擎根修：matchTargetItem 对纯占位符评论必挂——comment_text 全为「[表情]」时 stripPlaceholders 剥后 key 空串，旧三元 `key ? A||B : false` 直接短路恒 false，无 ID 链路 (nameOk||uidOk)&&contentOk 永不命中滚满 75s 白滚；修= key 空时降级判 DOM 侧 stripEmoji(content)（剥 \p{Extended_Pictographic}/\p{Emoji_Component}/ZWJ/FE0F/空白）后也为空（同为纯表情评论）才算内容匹配，文本评论（如「悟了」）不误伤防同评论者多条评论错位；引擎批（outreach-xhs.ts）须 rebuild 插件+用户重载 */
+// ⭐R96g1bc 1.2.179→1.2.180：卫星中继半死误诊 PLUGIN_FROZEN 根修批（261104 用户实报「栗子触达/探一下」反复冻结+三步取证定谳）——根因四重证据定谳「中继 TCP 半死吞任务」非插件冻结：①插件 SW Console 活跃滚动+alarm 保活（SW 没冻）；②插件 WS 从未断连（「已连上」仅一次）+workbuddy 验签成功会话在；③快车道任务（lead_records/get_daily_report/query_local_data）同会话执行成功；④决定性直连实验：主 Broker 宿主（trae）对同一笔记同任务直连 5.5s 回包成功（xsec_token 有效、采集链健康）——唯卫星 device.task.start 转发段零踪迹。机制：workbuddy（卫星）与主 Broker 的 TCP 半死（宿主睡眠恢复/网络切换后半开），ws.send 写进死连接蒸发不报错、close 永不触发，extensionConnected 快照恒 true+任务零回执→旧 frozen 判定冤枉「插件冻结」，用户被指引点 Chrome/重载插件全无效动作。四刀：①主 Broker handleDownstreamMessage 加 case device.ping→秒回 device.pong（活性探针应答）；②卫星 handleRelayMessage 加 case device.pong→唤醒探针等待者；③新增 probeRelayAlive(waitMs)（发 ping 等 pong，waitMs 无回=半死；readyState 非 OPEN/send throw 均判死）；④startTaskViaRelay 超时 frozen 分支重构——非 frozen 同步回 TASK_TIMEOUT（快车道/普通话术不变），frozen 候选先 probeRelayAlive(2500) 鉴别：有 pong=通道活→真插件冻结（PLUGIN_FROZEN 原话术）；无 pong=中继半死→新错误码 RELAY_STALE 精准话术（「插件无恙无需重载插件/重启 Chrome，直接原样重试；仍报错则完全退出重开本宿主」）+掐线自愈（relay.ws.terminate→exitRelayMode→重新竞争端口秒级重连）。旧版主 Broker 不应答 ping 的兼容性：探针判死→掐线重连（重连后任务恢复，行为正确无害）｜⭐R96g1bb 1.2.178→1.2.179：「栗子日报」误报 PLUGIN_FROZEN 根修批（2026-11-03 用户实报并令独立分析不被宿主话术误导）——根因三重证据：①lead_records 与 get_daily_report 同走任务通道同为快车道，前者刚成功回包 173 条分级看板=插件活着的反证；②卫星版 frozen 判定（extensionConnected && lastPluginMsgAt<sentAt 即「本任务发出后零插件消息」）对快车道工具型任务结构性误判——日报/账本/话术等工具型任务执行期天然零协议消息（无 progress 心跳机制），执行慢≠插件冻结；③日报执行链三个云端 fetch（briefing/monitorTargets/inbox）串行且全无超时（浏览器 fetch 默认可挂数分钟）+connection_status 只读 mjs 内存快照不触碰插件（宿主拿它当「恢复」依据是循环自证）——云端一抖任务超 30s 即误诊「Chrome 后台休眠插件」，用户被指引点 Chrome/重载插件全为无效动作。刀A 插件端 agent-tasks.ts 三处超时+降级：executeGetDailyReport briefing fetch 加 AbortSignal.timeout(8000)+失败降级 buildLocalActivityBriefing 本地活动简报（R96gcj「云端没有就给本地」初心延伸，不再直接报错退出）、fetchMonitorTargets 加 Promise.race 8s 封顶（apiRequest 无 signal 参数）、inbox fetch 加 8s——最坏 24s 必回包；刀B mjs 侧三处：新增 FAST_LANE_MODES 常量（14 模式与插件端 local-agent-connector.ts 同源，维护纪律：插件端扩容同步此处）+卫星版 startTaskViaRelay frozen 判定排除快车道（!fastLane &&）+超时话术三态（快车道专属「工具型任务插件大概率活着只是执行慢多为云端接口抖动，禁引导重载插件/点浏览器，稍等原样重试」）+leadsradar_get_daily_report 超时 30000→60000（三串行 fetch+IndexedDB 全量聚合，30s 对云端抖动太紧，60s 窗+插件端快速失败双保险）｜⭐R96g1ba 1.2.177→1.2.178：MCP 短名容错+回评深楼定位批（2026-11-03 用户实报四问题）——①「工具需要用全名调用」重试才成功=宿主偶发丢前缀调短名撞 UNKNOWN_TOOL 报「连接失败」：callTool 入口统一补 leadsradar_ 前缀根治；②send_reply 贯通 author_id（schema+dispatch+插件任务透传，激活小红书 uid 精确匹配通道）；③小红书回评深楼定位：locateTargetComment 窗口 30s→75s+滚动提速（450ms/轮 800px/步）+两阶段排序（热序滚 1/3 窗口未命中自动切「最新」回顶重搜）——修 1059 条评论中 4 天前 3 赞深评两次定位失败｜⭐R96gr 1.2.176→1.2.177：通道冻结根修批（⭐2026-11-03 用户实报「插件通道又冻结了（今天第二次），恢复后只活约 3 分钟又冻住」）——根因确诊=Chrome 后台节能冻结插件 SW（进程活/WS 活/协议 pong 由网络进程代答 → 15s 僵尸回收永不触发 + 插件 JS 全停 timer/alarm 皆死，无自救可能），冻结期旧连接半死不活挂着：任务白发进去超时、状态面板误导「连接健康」；修三层：①mjs 直连版 frozen 确诊（>45s 无应用层消息）即 this.client.terminate() 踢僵尸连接——ws close 钩子全套善后（座席释放/connected=false/abortPendingTasks/通知卫星），插件解冻即 close 事件达 → scheduleReconnect 自动重连，自愈不再依赖用户重启 Chrome；②卫星版 frozen 话术同步（无句柄不踢线，指路「切回浏览器点一下=前台交互解冻」）；③插件侧 connector activeHeartbeatFn 验活补洞（0.5min alarm tick 时 socket 在但 >45s 无 pong 也主动断开走重连，治 SW 冻结期 ping timer 停摆死角）+frozen 话术补防复发指引（chrome://extensions 开「允许在网站后台运行」/Chrome 设置→性能关「节能模式」）。随发 ⭐R96gq 格式批：helper 1.4.48 日报【🔴 最新线索】升表格 |#|A3|客户|评论|来源|（用户强调「格式格式格式，要用表格形式呈现，小标题要对」）+爆款榜单标注我的账号口径；closer 1.4.33 看板主指令改指【7天待回应】【7天获客榜】两板块+补定版样例（治宿主自由发挥旧聚组格式）；引擎 agent-tasks.ts 日报 own 口径三处（线索限 source_type=own/top_notes 限 self 账号作品/触达留痕保留全量）——引擎+插件侧有改动须重建重载浏览器插件。旧链：⭐R96gp 1.2.175→1.2.176：三反馈批（⭐2026-11-03 用户复测三反馈）——①closer 1.4.32【7天待回应】A3+优先排（七列式 |#|A3|客户|评论|来源|回评|私信|，A3 列取回执 intent 映射🟢A3强/🟠A3弱/🟡A2/⚪A1、来源列 note_title 作品名截前12字、排序 🟢→🟠→🟡→⚪ 同级问价/求购/求合作优先——数据面 lead_records 已直出 intent/note_title 零引擎改动）②radar 1.2.74+mjs get_daily_report 日报渲染归口管家栗（用户实报「栗子日报」被情报栗劫持自由发挥旧格式，路由边界+工具描述双落点堵劫持）③卫星模式冻结确诊（用户实报触达 300s 超时后 query_local_data 连试 5 次全超时白转 7 分钟宿主瞎猜被占用）——startTaskViaRelay sentAt 锚点 PLUGIN_FROZEN 判定+卫星 handler 六处 lastPluginMsgAt 活性打点 | ⭐R96gn 1.2.174→1.2.175：日报仪式化批（⭐2026-11-03 用户拍板方案A 纯模板仪式化，报头定版「📰 栗子日报 日期」）——helper 1.4.47 三点六段五件套包装（报头徽章行+段间 --- 分隔线+段首锚点 🔴🔥🎯⚙️+关键数字加粗+报尾日期戳）+定版骨架样例+旧【】段名退役+云端报/纯活动简报/空日报三形态同款骨架 | ⭐R96gl 1.2.173→1.2.174：误发事故根修批（⭐2026-11-03 用户实报同楼 3 连「怎么飞」刷屏）——引擎三层防重（background _recentlySent 同目标 10min 拦 DUPLICATE_REPLY+XHS 发前楼层 uid 防重+DY 发前楼层子作者防重）+send_reply/send_dm 工具描述补「确认单行直拷贝/回执即核/DUPLICATE_REPLY 禁绕过」 | ⭐R96gm 1.2.174 同批：日报四段式（helper：【最新线索】20/【爆款榜单】12（activity_report 新增 top_notes）/【对标命中】12/【系统信息】，云端五段映射收骨架）+我的线索看板两板块（closer：【7天待回应】20 条带回评私信两栏+【7天获客榜】12 条） | ⭐R96gcj 1.2.172→1.2.173：五连报障根修批（⭐2026-11-03 用户「P0修复+四质疑」全落地）——①快车道扩容（connector FAST_LANE_MODES 14 模式全集：日报/账本/话术/设置/登录等工具型任务并发直答不入串行队列+跳过 panelBusy 等锁，治深扫/残留锁占队期间 30s 档任务连环超时）；②队列忙即时回执（mjs resolveIfQueued：收到 queued progress 立即 resolve 排队回执带队列位次+前序任务描述，宿主不再干等 30s 超时报「没数据」；connector queued progress 增强信息量+TASK_MODE_LABELS 可读名；直连/卫星两路）；③无 waiter 不回 ack（mjs finishTask 未命中不回 task.result.ack——晚到结果保持未领取态留在插件 pendingResults 可 claim，顺手根治 R96at 注释里的「ack 后死数据」；task.result/task.result.end 两分支同口径）；④日报活动简报（插件 executeGetDailyReport 云端无 briefing 时本地聚合 activity_report fallback+有 briefing 附加——采集/线索（A3 分级计数）/触达三块，治「监控停摆就没日报」）；⑤采集默认降档 50 条（capture_note_comments 工具描述+radar/closer SKILL 三处，100 条 27s→50 条≈15s）。同批 SKILLS_LATEST：radar 1.2.73、closer 1.4.30（初卡回填 lf_leads contacted 历史留痕——治「测过多次回评私信显示空不属实」）、helper 1.4.45（日报 activity_report 渲染+空报口径）。引擎批须重载插件生效。⭐R96gcf 1.2.171→1.2.172：四栗攒批合一发（引擎零改动，纯 SKILL 批）——insights 2.3.12（主副词三层 R96gba/gbb+栗子报告统一动作词/复盘两出口 R96gcd+四主词专属同义词 R96gcf）、creator 1.2.32（栗子创作第四件套注册 R96gay）、closer 1.4.29（查询四词主次+终版快照/设置出口 R96gay）、helper 1.4.44（主副词总纲+栗子帮助/栗子日报主词化+菜单对齐 R96gba~gce）。⭐R96gax 1.2.170→1.2.171：纯 SKILL 批（radar 1.2.72 唤醒词三层重构批，引擎零改动——①输入分流双层结构：对象兜底表（不带功能词按对象类型分流 A/B/C/D/批量）+功能入口 9 组三层唤醒词表（主唤醒词 1 个规范入口+注册同义词明文注册确定性命中+同语义模糊词意图识别兜底），替代原单一混合大表；②关键词四岔口默认次位表：空档→栗子研究（首免）/被占→栗子研究/拿不准→栗子存选题/死词→栗子研究，死词岔口禁配加对标/存选题；③深采领取 A3 富矿分叉：scan_summary 线索率 ≥30% 或 🟢≥5 → 次位换栗子触达截流，与流程 E 命中同款逻辑）。⭐R96gaw 1.2.169→1.2.170：纯 SKILL 批（radar 1.2.71+creator 1.2.31+helper 1.4.38 三栗【下一步行动】五维评分调整配套，引擎零改动——评分明细见 SKILLS_LATEST 三行批注）。⭐R96gav 1.2.168→1.2.169：插件通道冻结确诊+agent 等锁 90s 双修（⭐2026-11-03 实测「栗子触达」小红书链接采集 300s 超时后 query_local_data 重试 7 次共 7 分钟全超时、通道十几分钟无响应不自愈——根因确诊=插件 SW 事件循环冻结：WS 协议层 pong 由浏览器网络进程自动回不经插件 JS，连接显得健康（15s 僵尸回收不触发）但插件 JS 停摆，消息进不来也回不去，宿主超时引导的「先查本地库」救援通道同被冻结堵死、重试白转；刀1=引擎 agent-tasks.ts waitForCollectLockFree 参数化+6 处 agent 链路调用改 AGENT_COLLECT_LOCK_WAIT_MS=90s——connector 串行队列单并发，31 分钟等锁=深采/残留锁占用时后续所有 agent 任务含救援查询链排队饿死，agent 等不到就 90s 快速回 COLLECT_BUSY 让宿主稍后重发，UI 链路（面板手动采集）保持 31 分钟不变；刀2=Broker lastPluginMsgAt 应用层活性打点（join+任何已 join 消息 switch 前统一刷新，20s 心跳 extension.ping 必到一条）+startTask 超时分支 >45s 无应用层消息确诊 PLUGIN_FROZEN——话术改指引重启 Chrome/重载插件（chrome://extensions），不再误导宿主空转重试；引擎 agent-tasks 有改动须重载插件） */ /* ⭐R96gas 1.2.167→1.2.168：栗子守家更名栗子我的线索（mjs lead_records description/注释+插件端 agent-tasks 标题【我的待回应线索】）+小红书回评空壳自愈（⭐2026-11-03 实测 3 客户 5 次全「未定位到」0 发出，根因=pc_search 一次性 xsec_token 失效开成空壳页——content 回执加 comment_count=0=空壳，background 剥 query 纯 /explore/{id} 同 tab 重开重试一次）+插件 UI 两处（监控页删「云端 24h 盯盘」TikHub 文案卡、CollectiveBar 加 bareCount 纯数字「6/24」），随 closer 1.4.28+helper 1.4.37 发版；引擎有改动须重载插件｜⭐R96gar 1.2.166→1.2.167：lead_records 加 source=own 守家视角（MCP 参数 source=own→mjs 映射 lead_source 下发不占 source 宿主标记+插件端 own 缩圈 own+current_self 口径对齐收件箱 InboxModal），随 closer 1.4.27（栗子守家入口）+helper 1.4.36（守家路由）发版；引擎有改动须重载插件｜⭐R96gaq 1.2.165→1.2.166：纯 SKILL 批引擎零改动，bump 仅为携带 closer 1.4.26（触达入口定版+留痕表按作品四列定版+截流渠道纪律：别人作品私信优先）+helper 1.4.35（栗子版本主词定级）发版｜⭐R96gap 1.2.164→1.2.165：纯 SKILL 批引擎零改动，bump 仅为携带 closer 1.4.25（触发词族定级：触达=总称+栗子私信注册+触达记录渠道留痕模板）+helper 1.4.34（栗子版本卡）发版｜⭐R96g1ao 1.2.163→1.2.164：开关拆渠道+防误发双闸批（⭐2026-11-02 用户三拍板：①「应该分开，改」——成交文档/人设档案 options 两卡看着两套实际绑同一字段，插件端 outreach-settings 拆 use_deal_doc_reply/_dm、use_persona_doc_reply/_dm 四字段+存量迁移（两渠道继承旧值）+options 两卡分绑+CommentDetailsModal genOpts 按 mode 取渠道值（云端 route 参数名 use_deal_doc/use_persona_doc 不变）；agent-tasks executeTouchSettings get 拆两渠道口径+set 四新字段独立处理（旧名兼容=两渠道同设）；mjs touch_settings schema 拆字段。②「发错的是很严重的问题，要想办法杜绝」——小红书误发 6 号根因=宿主传参串行+引擎定位只靠昵称+内容弱键（agent-tasks 未传 comment_id 而引擎早已支持 platform_comment_id 精确命中——链路断头）：修=agent-tasks send_reply 贯通 comment_id→platform_comment_id；xhs matchTargetItem ID 命中不再短路直通、仍须 nameOk||uidOk 硬闸（宁可不发不错发）；回执回显 matched_commenter/matched_comment_text 实际定位评论（xhs+dy 双端回填+outreach.ts 透传+agent-tasks 透出带核对指令——宿主每条发完必须与名单核对，不一致=误发立即停手告知用户）；mjs send_reply schema 加 comment_id 必传纪律。③「评论发送失败不是bug？」——xhs locateTargetComment 定位窗口 15s→30s（旧评论深滚动可达，缓解 1/2/3/8/9 定位失败）；④顺手修 agent-tasks send_reply/send_dm message 旧节奏口径→回评 8-40s 按稿长/私信 45-90s（R96g1am 漏改处）。配套 closer 1.4.24 */ /* ⭐R96g1an 1.2.162→1.2.163：触达设置查呈现拆两表批（⭐2026-11-02 用户大测复验「栗子触达设置」后拍板「触达设置的回复设置和私信设置要分开两个表格展示」——旧单表八项混排回评/私信字段交错）：closer 1.4.22→1.4.23 第七节「查」改两张表格——【回评设置】（手动回评稿/AI 回评要求/AI 字数回评/生成条数）+【私信设置】（手动私信稿/AI 私信要求/AI 字数私信/生成条数），成交文档/人设档案注入为公共项跟两表后一行文字（回评与私信生成共用同一开关不进表）；mjs touch_settings description 同步补两表口径（本文件仅此一处 description 改动与 SKILLS_LATEST/ADAPTER bump，适配层零逻辑改动；上批 R96g1am 的插件端 CommentDetailsModal 节奏改动随本批 261102 构建一并生效） */ /* ⭐R96g1am 1.2.161→1.2.162：触达节奏定档批（⭐2026-11-02 用户问「每一个间隔45秒感觉有点慢了，再论证下多久合适；组间间隔多少合适？私信的MC速度如何？」+拍板「回评论8-40s随机，跟评论字数有关系。加象征性的组间距比如1分钟…私信也是批间隔1分钟」「200和80吧」——实查 MC v0.4.0 源码定档：OUTREACH_FEATURE_KEY=outreach.private_message 实锤 MC 只有私信无回评能力、回评是 LF 独有能力；「每 5 人健康检查」=发送前安全门（页面风控信号/响应性/账号身份一致性三查）非节奏单位，LF 已有同款反应式风控+发送身份卡兜底无需新增；新档三端一版口径=回评批内 8-40s 按稿长挂钩（replyGapSeconds=8+len×0.35+rand0-4 夹 8-40：30字≈19s/60字≈29s/80字+封顶40s 模拟真人打字节奏）、私信批内 45-90s（MC OUTREACH_POLICY 同款实证）、批间 ≥5min→1min 象征性分段、日限单账本共享100→双账本解耦（lf_touch_ledger 回评 ≤200 继承旧计数/lf_touch_ledger_dm 私信 ≤80 新键从0起）；落地三处：插件 CommentDetailsModal 常量区+账本函数+handleTouch/handleBatchSend 节奏闸（引擎侧实际改动须重载插件）+closer SKILL 1.4.21→1.4.22 六处（节奏纪律主段/分批方案/第八节硬规/阶段2示例/阶段3模板）+mjs send_reply/send_dm description 同档（本文件仅 description 口径与 SKILLS_LATEST bump，适配层零逻辑改动） */ /* ⭐R96g1al 1.2.160→1.2.161：无 A3 出口补评论分级明细表批（⭐2026-11-02 用户问「每一个间隔45秒感觉有点慢了，再论证下多久合适；组间间隔多少合适？私信的MC速度如何？」+拍板「回评论8-40s随机，跟评论字数有关系。加象征性的组间距比如1分钟…私信也是批间隔1分钟」「200和80吧」——实查 MC v0.4.0 源码定档：OUTREACH_FEATURE_KEY=outreach.private_message 实锤 MC 只有私信无回评能力、回评是 LF 独有能力；「每 5 人健康检查」=发送前安全门（页面风控信号/响应性/账号身份一致性三查）非节奏单位，LF 已有同款反应式风控+发送身份卡兜底无需新增；新档三端一版口径=回评批内 8-40s 按稿长挂钩（replyGapSeconds=8+len×0.35+rand0-4 夹 8-40：30字≈19s/60字≈29s/80字+封顶40s 模拟真人打字节奏）、私信批内 45-90s（MC OUTREACH_POLICY 同款实证）、批间 ≥5min→1min 象征性分段、日限单账本共享100→双账本解耦（lf_touch_ledger 回评 ≤200 继承旧计数/lf_touch_ledger_dm 私信 ≤80 新键从0起）；落地三处：插件 CommentDetailsModal 常量区+账本函数+handleTouch/handleBatchSend 节奏闸（引擎侧实际改动须重载插件）+closer SKILL 1.4.21→1.4.22 六处（节奏纪律主段/分批方案/第八节硬规/阶段2示例/阶段3模板）+mjs send_reply/send_dm description 同档（本文件仅 description 口径与 SKILLS_LATEST bump，适配层零逻辑改动） */ /* ⭐R96g1al 1.2.160→1.2.161：无 A3 出口补评论分级明细表批（⭐2026-11-02 用户复测 1.4.20 后拍板「这种没有A3+和A3的要不要也展示至少满15条？只不过A3+和A3、A2、A1按照优先级展示而已？我之前设置的是15条还是20条，之前设置20条就20条」——上批 1.4.20 把无 A3 出口收得太狠只剩一句结论+计数，用户要看到评论明细本身：无 A3 时也出【评论分级明细】六列表（与跟进卡同款同构：🟢→🟠→🟡→⚪ 优先级+档内👍降序+全局连续编号，无 A3 时 🟡⚪ 升格进默认表，默认 ≤20 行不足全列零截断，超出计数行括注另 N 条）+指路一行；三禁保留（禁痛点主题表格/整理选题素材/存选题行动项——明细=原始评论逐条列表禁改写成主题归纳）；closer 1.4.20→1.4.21 同批（阶段 0 出口升级+整段照抄模板+阶段 1 跟进卡规则补无 A3 例外指向防两规打架）；纯 SKILL 批引擎代码零改动，bump 仅为携带 closer 1.4.21 发版） */ /* ⭐R96g1ak 1.2.159→1.2.160：自更新节流毒化根治批（⭐2026-11-02 用户实报「为什么反复出现部署失败、每次都无法根治」——复盘四起更新事故，前三次（R96bm/cz/dz）是「宿主查得不准」的源可信度问题已被源链 v3 修掉，本起是独立的时序洞：npm publish 后 CDN 传播有 ~10min 真空窗（registry ~5min/data.jsdelivr ~10min），发版侧 registry 一确认就宣布完成，宿主在真空窗内查网拿到「当时真值」旧版，查询没错但 up-to-date 零价值结论享受 30min 长缓存把发现新版锁满整窗→「栗子在吗」仍报全最新；两层根治：①宿主侧节流分档——发现新版（latestVersion 新于进程，下载/写盘重活）保持 30min 防抖，up-to-date/查询失败（零下载成本）缩 3min 短窗 UPDATE_FRESH_INTERVAL_MS，任何毒化最多 3min 自愈②发版侧 agent-deploy publish-ready.mjs 就绪守卫——publish 后轮询 data.jsdelivr（宿主版本发现链第一源）直到 tags.latest==本包版本才报「发版完成」（上限 10min），发版验收标准从 registry 确认升级为 CDN 就绪，用户侧杜绝撞传播窗；纯引擎批 SKILL 零改动） */ /* ⭐R96g1aj 1.2.158→1.2.159：无A3出口收紧+标题互动根治批（⭐2026-11-02 用户两报——报1「还是查不到标题怎么？没连上插件？互动也不全面啊」：插件连接正常，comments 分支 note_meta 反查命中的常是搜索/主页列表落库的空 title 脏记录（有互动数无标题），note_meta.title 透出去恒空；修=引擎 agent-tasks.ts comments 前置详情补采——库内缺标题时同 tab 先发一次 COLLECT_NOTE_INFO 刷新库再采评论（一次开页不额外占风控名额，已有完整标题零开销跳过，补采失败不阻断评论采集）+note_meta 互动四项透全（旧版只透 like/comment 两项，补 collect_count/share_count；小红书不显转、抖音互动行尾加🔁由 SKILL 分平台呈现口径）；报2「另外怎么是痛点主题？这是谁设计的？」：无 A3 线索时宿主自建痛点主题表格+存选题行动项越界代劳洞察栗/创作栗——SKILL 阶段 0 旧文「🟡的痛点转内容选题（归创作栗）」表述宽泛给了自由发挥空间；修=closer 1.4.19→1.4.20 无 A3 出口收紧：全是🟡⚪时交付物=一句结论「这篇没有可触达的A3线索，不出稿不空转触达」+指路一行（换篇栗子触达/深挖痛点说栗子研究转洞察栗），禁自建痛点主题表格、禁整理选题素材、禁代创作栗出存选题行动项） */ /* ⭐R96g1af~ai 1.2.157→1.2.158：四批攒批发版（⭐2026-11-02 用户实报「技能没更新还是旧版」——npm 停在 1.0.133/ADAPTER 1.2.157，本地四批只 bump SKILLS_LATEST 未发 npm，宿主 get_latest_skills 永远拉旧包；本批补发）：R96g1af 评论能力迁移 WorkBuddy（新工具 leadsradar_send_reply/send_dm 一键代发+先核后标）+R96g1ag 触达匹配复合键（纯插件批 mjs 零改）+R96g1ah 五问批（新工具 leadsradar_touch_settings）+R96g1ai 宿主四报批（comments 回执补 note_meta 作品标题真源+Agent 采集进度 _agentChannel 通道过滤）。SKILLS_LATEST 随批：closer 1.4.16→1.4.19、helper 1.4.32→1.4.33。 */ /* ⭐R96fc 1.2.156→1.2.157：跟进卡双状态列+20行新规+私信对齐+执行单并卡批（配套 closer 1.4.16，⭐2026-11-01 用户抖音端复测四点反馈——a 默认展示 20 条评论优先展示绿色要全量打字展示；b 私信格式没完全跟评论格式对齐【私信任务】【私信内容】；c 跟进卡加私信/回复两维度成功显 ✅、触达执行单和类似后续单据全部合并进跟进卡同格式同源数据；d 其他问题；修=①跟进卡四列改六列 |档位|#|评论|客户|回评|私信|——状态两列=触达进度维度（—/⏳/⏸/✅），初卡全 —、阶段 4 直接在本卡更新状态禁另起独立执行单，同源 lf_leads 账本+会话进展；②展示规则旧「🟢≤5/🟠≤5」退役改默认 ≤20 行 🟢 优先全列 🟠 补足（261101 抖音实测 🟢7 只列 5 条、「栗子回复 1-6」时 6 号断层）；③纯私信块名分家=【私信任务】+【私信内容】表补「对方评论」列四列与【回复内容】完全同构；④阶段 4 重写=【触达执行单】退役发完每批直接重渲染跟进卡（帽行「第 N 批完成 X/Y」+状态列现填只列触达涉及行；跨作品【线索账本】不属合并范围）；⑤纪律表格豁免跟进卡固定 6 列 ≤20 行。纯 SKILL 批引擎零改动，生效前提=宿主经 get_latest_skills 更新 closer SKILL.md） ⭐R96fb 1.2.155→1.2.156：代发四步核+先核后标批（配套 closer 1.4.15，⭐2026-11-01 用户复测「继续做回复测试你看看问题在哪」——宿主代发第 1 条三连环误报实录：误点「取消」收起输入框→二次输入落进笔记总评论框（绑错对象）→按钮灰态硬当已发，报「✅ 已发出已留痕」后用户网页端没看到回复打穿，宿主认错改账本重发才成功；SKILL 四缺口实锤=「发一条标一条」没定义「发出」判据/留痕早于核验/无输入绑定核验/无定位指导；修=①「发一条标一条」改「先核后标」——发送成功唯一判据=发送后核验页面（目标评论楼下真实出现当前登录号该条回复才算发出），顺序钉死核验通过→mark_replied→回执 ✅，未核到禁报 ✅ 禁留痕，误报须认错+账本改回待处理+重走流程；②新增「代发操作四步核」条（定位提速：页内查找 Ctrl+F 搜客户昵称直达禁滚动逐层扫+视野内相邻目标一次定位挨个回批内间隔照留回完一片再找下一片/绑定核验：输入前确认挂载对象=目标评论楼中楼回复框 placeholder 带客户昵称防落进笔记总评论框/发送：按钮灰态=没绑对回绑定核验步重核禁硬点、发送取消相邻点前看清/核验：等 1-2 秒核楼下出现登录号+成稿文字核到才算发出接写账本）；③阶段 4 状态三态 ✅ 收紧=四步核通过页面核到真实回复才打勾核不到标 ⏳ 如实说；用户第 2 问「回复速度跟什么有关要不要每次重新定位」固化进四步核①——页内查找+一片一片回不逐条从头滚，强制间隔 30-60s 是风控纪律大头不能省（MC v0.4 实证 45-90s 更长）。纯 SKILL 批引擎零改动，生效前提=宿主经 get_latest_skills 更新 closer SKILL.md） ⭐R96fa 1.2.154→1.2.155：分级词表 B2B 补齐+节奏对齐 MC 实证批（配套 closer 1.4.14，⭐2026-11-01 用户复测三问——①「🟢 15 > 🟠 7 这数据对吗？A3+绿色比橙色还多？是不是表述混淆了？」用户澄清绿橙=A3+/A3 并列档非包含关系：本地库 78 条人工判级绿=15 吻合数字本身对（服务营销帖问价/私我/怎么合作类硬意向扎堆绿>橙是真实构成），但橙被压扁（人工判 ~13 宿主只判 7、🟡 虚胖至 20）——根因=closer 第四节 🟠 特征词全是 C 端消费词（想买/纠结/蹲一个），B2B 服务评论区软意向词「了解一下/怎么做/有吗/XX 行业获客」全缺失按「拿不准就降档」被批量压进 🟡；修=🟠 词表补服务/B2B 语境词+三条边界判例（绿橙并列独立计数非包含/向博主求方案=🟠 不降 🟡 对齐插件引擎 A3_SOLICIT_PATTERNS/同行引流自荐=⚪ 禁进 A3）；②「两批之间 30 分钟？有点夸张了吧？你查下 MC 的去触达批次间隔和组间间隔」：实查 Chrome 实装 MC v0.4.0（知识库快照滞后只记到 v0.3.2）新增 comment-outreach+utils/outreach 模块=插件端自动私信，OUTREACH_POLICY={executionGroupSize:5, maxDailyRecipients:100, minDelayMs:45s, maxDelayMs:90s}——发送间隔 45-90 秒/条、执行组 5 人检查点、组间零额外等待（UI 原文「发送间隔 X–Y 秒，跨组同样生效」）、日预算默认 100 可调 1-500、风控反应式；修=批间 ≥30 分钟→≥5 分钟（六处全改）+补单账号日触达总量 ≤100 人纪律；③断层隐患：名单只列 🟢1-5/🟠16-20 截断段时用户喊「栗子回复 1-7」，6、7 号是未展示的全量名单条目回复表冒出名单上没有的客户无从对号，修=阶段 2 补「点名超出已展示名单段必带一行交代」规则。纯 SKILL 批引擎零改动，生效前提=宿主经 get_latest_skills 更新 closer SKILL.md） ⭐R96ez 1.2.153→1.2.154：触达合并本地库+断连救火一次制批（⭐2026-11-01 用户复测两问：①「🟡 7 · ⚪ 2，这数据对吗？」——实查本地库 78 条（上轮 77+新增 1），手工对热门前 30 条分级=🟢12 🟠11 🟡7 ⚪2 与宿主回执完全吻合：数字本身对（capture_note_comments 默认 limit 30 只覆盖热门区），但触达重跑不合并本地已有评论，名单从 34 条缩到 23 条+⚪ 从 35 缩到 2，用户感知「数据不对」实为缩水呈现歧义——修=closer 1.4.13 阶段 1 采集后必调 query_local_data(source=comments) 按作者+内容去重合并、分级与名单永远基于合并后全量、「已采 N」=合并基数，limit 建议显式传 100+；mjs capture_note_comments description 同步合并提示；②宿主断连自启浏览器四步折腾（start chrome 没起来→找 chrome.exe 路径→后台被回收改 shell→Bash 沙箱拦截改 PowerShell）卡 2 分钟——根因=extensionLaunchHint「若你有终端权限，运行 start chrome…」没限次数诱发宿主无限换姿势，修=extensionLaunchHint/startTask 直连 fallback/startTaskViaRelay 卫星分支三处文案收紧「仅尝试一次，不成或无终端权限立即转用户引导（开浏览器/点插件/开关智能体连接），禁换姿势反复重试」+卫星分支补连接被占场景引导） ⭐R96ey 1.2.152→1.2.153：档位计数行温度计四色版+whoami open_url 代开批（⭐2026-11-01 用户复测两反馈：①「这里显示有问题，应该只显示绿色和橙色注释，黄色白色应该用温度计方式一起呈现，你看下别的地方咋呈现的对齐下」——closer 档位计数行旧规自带「🟡 N（转内容选题）」括注（宿主照规执行产物非跑偏），修=closer 1.4.12 计数行温度计四色版「🟢 N · 🟠 N · 🟡 N · ⚪ N」——🟡⚪ 恒裸计数禁任何括注（与探一下【线索快扫】四宫格同序同款全端统一色板）、🟢🟠 可各带 ≤20 字短括注、🟡 转内容选题分流逻辑住能力 1 首段不占计数行；②「另外读到了插件，但是不能唤起网页？」——R96ew 定的「不自动开 tab」边界被用户推翻，引擎 executeWhoami 拆 readPlatformLogins 闭包：没开任何平台页+带合法 open_url（https+xiaohongshu/xhslink/douyin 域名白名单后缀匹配）→ chrome.tabs.create 前台代开+等 4s 页面 boot 出登录态+二次读取，成功 message 前缀「（已自动为你打开页面）」，代开后仍读不到走专属引导（登录/稍等复查）；closer 1.4.12 出稿前 whoami 必传 open_url=作品链接（没开页插件自动代开，手动开页引导退役）；mjs TOOLS whoami inputSchema 加 open_url+dispatch 透传 openUrl+超时 10s→15s（代开+等 boot 约 5-8s）） ⭐R96ex 1.2.151→1.2.152：whoami 引导分流+回复主体前置闭环批（⭐2026-11-01 用户三反馈：①「回复账号要确认当前平台的登录账号啊……这一步要核实是否有账号登录，以及是哪个账号，不然回复主体错了，或者没有登录，不至于事后。如果需要登录，也要本步让用户登录」②「浏览器和MCP的指引是否总保持一致？」③「回复账号是不是叫回复主体更好？」）：①引擎 executeWhoami 区分「没开平台页」vs「开了未登录」两种 message 引导（opened 集合记录有页平台；开了未登录→「请先在该页面完成登录（右上角能看到自己头像=已登录）」；部分平台核到时 message 附「另：X 页面已开但未检测到登录」）+closer 1.4.11 配套——③行名「回复账号」→「回复主体」（用户四选一拍板）+核不到=本步阻断不出稿（按 message 分支引导开页/登录、复查核到才出稿，「发送前现场核」事后话术退役）+核到多平台按作品平台选账号；②浏览器行不写死 Chrome——browsers 是磁盘扫推断（Chrome/Edge 各 profile、10s 缓存），whoami/MCP 连接与插件物理同源恒一致，浏览器名照实核到什么写什么 ⭐R96ew 1.2.150→1.2.151：closer 1.4.10 回复任务表精简配套+新工具 leadsradar_whoami（平台登录账号现核）——261101 用户三反馈：①「回复账号还是没检测到 chrome 登录的平台账号」——closer 回执只有名下账号列表（云端 self_accounts），只能列候选反问；根修=引擎 executeWhoami（chrome.tabs.query 找已打开的小红书/抖音页 MAIN world 注入读当前登录账号——xhs __INITIAL_STATE__/dy RENDER_DATA 同源 index.ts GET_LOGGED_IN_USER；零采集不开新 tab 不滚动不占风控限额）+mjs 新工具 leadsradar_whoami 注册（TOOLS/dispatch 双注册，10s 短超时）——closer 出稿前调一次把「回复账号」行从候选反问升级为「⭐已核 @真昵称」；②「浏览器里面出现一些用户不太理解的语言」+「回复作品只展示标题和作者平台即可」+「是否本人/发送留痕两行感觉有点多余」——closer 1.4.10 五项直核表精简三项（去是否本人/发送留痕两行+回复作品行只留《标题》（作者 @X · 平台）+浏览器行去 extension.browsers 技术黑话）；另：同批取证定案 Agent 采集 tab 前后台统一（R96cy foreground=false 不分平台，用户观察的「小红书 active/抖音后台」差异在 Agent 通道不存在）+对标扫描同步受益（我的号与对标同走 profile_posts→executeDeepProfile 同一路径，R96ev 深扫 seen 账本/只追新发布一刀覆盖两种场景） ⭐R96eh 1.2.135→1.2.136：closer 1.4.1 三稿全展示配套（⭐2026-10-31 用户拍板「明明消耗了却不给用户看，有点浪费ai积分，这是bug。浪费钱的行为应该被杜绝」——云端 quick-reply 一次生成 3 候选已占 1 次 aiReply 日限，旧「一次一稿」只展示 1 条=另 2 条白生成浪费积分）：closer SKILL 阶段2 表格每序号铺 3 行候选（a ⭐主推/b/c，客户/评论列只 a 行填省宽）+挑稿制（用户说编号如「用 1b」即选该稿，不说默认 a）+重新生成口径补死（3 稿都不满意重新生成=新占 1 次日限，生成前告知）；纯 SKILL 批引擎零改动，生效前提=宿主经 get_latest_skills 更新 closer SKILL.md） ⭐R96ef 1.2.134→1.2.135：7 天外补足排除置顶批（⭐2026-10-31 用户拍板「图解万物 3 条确实是置顶——这是Bug，我们展示的是最新应该」：置顶是作者挑的橱窗位非时间最新，「7 天外最新 3 条」3 条全置顶旧作冒充最新是 bug）——三处同款刀：agent-tasks.ts 监控池 query_local_data source=monitor（HitRow 补 is_pinned 声明+olderList→olderPick 排除置顶+items 透出 pinned 与 latest_notes 同款）、capture_profile buildLatest（olderList→olderPick）、MonitorTab.tsx pickStripHits（同款）；口径=只从非置顶旧作里取最新补足、非置顶旧作空则不补足（不拿置顶凑数）、近 7 天组内不排除（7 天内发布的置顶=真新作，宿主「（置顶）」尾缀可辨）；SKILL 1.2.61 口径四处同步（监控池行/流程 E 照抄口径/自查定版段/【最新动态】置标记规改写「7 天外补足已排除置顶，pinned 尾缀现仅见于近 7 天组」）；引擎批须重载插件生效） ⭐R96ee 1.2.133→1.2.134：长任务开工预告+作品表纯时间降序+置顶标记透传批（⭐2026-10-31 用户三反馈拍板）：①反馈1 开工预告（用户拍板 A 方案——同步死等型任务（扫对标/扫我的/关键词首扫/账号速览）宿主全程哑巴数分钟，等待预期没告知是痛点根因；MCP 单请求阻塞 tool call 期间宿主技术上无法中途插话，把「等多久」说在开工语里即可，pending 型零抱怨同根因）——radar SKILL 1.2.60 栗子仪式段开工预告纪律：预计超 1 分钟的任务开工语同一条消息内追加 ⏳ 预计 X-Y 分钟 · 浏览器自动翻页采集属正常 · 跑完立刻回来汇报（时长口径：流程 E=每号 1-3 分钟×号数，深扫池未建/未满时更久首扫干满最长约 +40 分钟，刚扫过/池有料会更快，往快说不往慢说；给区间禁精确秒数；预告行随开工语一次发出后即调工具执行中不再插话；快任务 <1 分钟不加保持轻快；预告行不算过程旁白——旁白砍执行中叙述，预告是开工时一次性预期管理）；②反馈2 作品表纯时间降序（用户拍板「后面已经有专门给命中的栏目了，不需要再改变时间顺序，在任何情况下都是按照时间顺序排列的」推翻 b18+ 命中置顶）——agent-tasks.ts 三处排序同删命中置顶层：监控池 query_local_data source=monitor sorted、capture_profile buildLatest sorted、MonitorTab pickStripHits（插件折叠栏同步）；保留「近7天组在前→组内时间降序→7天外殿后→不足3条补足→上限7条」，命中信息由 status 标记（宿主命中列 ✅/—）与【命中详情】板块承担不再参与排序（治实报：肖予暄 10-27 命中被顶到 10-30 之前、Judy 10-29 命中被顶到 10-30 之前）；③反馈2 配套置顶标记透传（用户问图解万物「不会采集的是三个置顶视频吧？」——is_pinned 采集侧全链早有（douyin semi-tag「置顶」精确匹配+cardRawText 前缀兜底/xhs top-wrapper/types/phase2-api/lf_monitor_hits），唯独 latest_notes 一直没透出，宿主无法区分「置顶旧作」与「真最新」，跨年无年份显示（07-07/01-02/12-30）更易误读乱序）——latest_notes 条目补 pinned:!!n.is_pinned 透出，宿主标题尾缀「（置顶）」一眼可辨；SKILL 口径三处同步（监控池上限行/自查定版段/【最新动态】条目+置顶标记规）+流程 E 步骤 3 开扫前预告行落点。引擎批须重载插件生效） ⭐R96ec 1.2.132→1.2.133：SW 启动清孤儿 agent 锁批（⭐2026-10-31 用户实测「探一下也失败了」——情报栗 note_detail 超时+评论走本地库存量；复盘定案=用户 15:18 打断「扫我的」后 15:19 SW 闪断重启，深扫 Promise 随 SW 死亡 finally 不跑，lf_collect_lock 残留 storage（30min 泄漏线太钝）；15:32「探一下」note_detail 撞残留锁干等 2min 把 mjs 窗耗光超时，而采集实际 15:34:18 秒完落库（锁龄满 30min 放行后实测复测同链接 5.6s 全字段回包）——数据没丢只是回包通道被残留锁拖死；修=agent-tasks.ts 模块顶层启动钩子：SW 每次冷启动时锁 owner 为 agent-task:* 前缀且锁时间戳早于本次 SW 启动时刻（SW_BOOT_AT 基准，本代新拿的锁时间戳≥启动时刻零误清）→ 直接清锁；UI 链路锁（owner 非 agent-task:* 前缀）不受影响——side-panel 可跨 SW 重启持锁；引擎批须重载插件生效） ⭐R96eb 1.2.131→1.2.132：后台抗节流三件套批（⭐2026-10-31 用户实测「栗子扫我的」肖予暄 14 分钟卡住无回包——复盘定案=Chrome 后台 tab 静默 5min 后 setTimeout 压到 1 次/分钟，R96cy 彻底后台零闪烁的三处毒：①列表滚动间隔 randomDelay 3-6s 被拖成 ~60s/轮 ②评论循环 document.hidden 死等切回（5s 安全网节流成 60s）空转到 5min 硬顶评论实质采不动 ③smooth 平滑滚动依赖 rAF 渲染帧后台不渲染滚动不动虚拟列表不加载，首扫 50 条×30 评论从前台 ~45s/条 被拖到 5min+/条 数小时级；用户拍板「抗节流三件套」保零闪烁：①scrollBehaviorAdaptive() 共享（hidden→instant 直跳，scroll 事件/DOM/网络/JS 后台照常只停渲染帧，直跳照样触发懒加载；前台保 smooth 拟人）humanScroll+评论区+xhs 账号/搜索+dy 搜索五处滚动点接入 ②adaptiveDelay 事件驱动版（后台+有容器时 MutationObserver 监听 DOM 变更即继续——MO 回调 microtask 不受 timer 节流，节奏=真实加载速度天然拟人，被节流 setTimeout 只当兜底防 DOM 永不变卡死；前台照旧 randomDelay）五径接入 ③评论循环删 hidden 死等段（后台直接继续采，effectiveStartTimer 前后台分计随之移除）；引擎批须重载插件生效） ⭐R96ea 1.2.130→1.2.131：引擎 emoji 补刀批（⭐2026-10-31 用户复测实报「√ 开 · 每条上限 30 条」仍显纯文本 √——R96dx 只改了 radar SKILL 模板 emoji 定版，漏了引擎 executeScanSettings 回执同款：宿主按 SKILL 纪律「当前值照抄回执」办事没错，是引擎喂的旧符号；修=agent-tasks.ts 两刀：①fmt 当前值行 评论采集√（每条上限 N 条）/× 改 ✅ 开（每条上限 N 条）/❌ 关（每条上限 N 条保留）与 SKILL L485 定版逐字同款 ②changes 行 开→关/关→开 改 ✅ 开→❌ 关/❌ 关→✅ 开，宿主【修改结果】表改前改后列照抄即得 emoji 定版；引擎批须重载插件生效） ⭐R96dz 1.2.129→1.2.130：源链 v3 批（实锤事故：npm 1.0.102 已发但 unpkg@latest 停 8 天前 1.0.13、npmmirror /latest 停 1.0.89、npmjs 国内不通——版本号发现链被国内可达源 CDN 缓存整体卡死，宿主技能拉新永远拿旧包报「回撤/滞后」，helper 1.4.32 送不到；修：①版本号链头插 data.jsdelivr 元数据 API（国内秒回分钟级新鲜，{tags:{latest}} 与 {version} 双形状兼容解析）②主源组 @latest 别名退役改 unpkg/jsdelivr @精确版双源竞速（显式 URL 缓存键唯一无 latest 滞后；jsdelivr@latest 兜底保留 primary:false 滞后守卫拦）；纯 mjs 批引擎其他零改动） ⭐R96dy 1.2.128→1.2.129：菜单指令三处精简批（⭐2026-10-31 用户复检三反馈：①00 行简化「栗子档案/登录/帮助」（栗子查撤菜单不撤触发词+帮助/教程并一词）；②成交栗行删「/谁还没回」；③洞察栗行拆「栗子研究 <作品/账号链接/关键词>」+「栗子复盘」两组（研究=外部对象、复盘=我的账号专属）——三处均撤菜单不撤触发词；纯 SKILL+mjs bump 批，引擎零改动无需重载插件；另证：用户报「云端全文还是 1.2.57」为 npmmirror 镜像同步暂态滞后——npm 官方+unpkg 的 1.0.101 已含 radar 1.2.59（本批实查 unpkg 返回 1.2.59），npmmirror latest 仍停 1.0.100，自检「预告与云端落差→本地不降级→下次报到再查」兜底正确无需改码，镜像同步后自动拉齐） ⭐R96dx 1.2.127→1.2.128：纯查交付三补批（⭐2026-10-31 用户复测三反馈：a「× 关（每条上限 30 条）没有显示和 √ 对应的 emoji；√ 开这样 emoji 也不对」→SKILL 表格口径 emoji 定版——开=✅ 开（每条上限 N 条）/关=❌ 关（每条上限 N 条保留）成对，禁 ×/√ 纯文本符号（旧口径是 R96dt SKILL 自己定的「开=√ 关=×」，纯查表评论采集行+修改表改前改后同款）；b「观察期是云端监控的观察窗，观察窗口是观察啥呢？补充啥数据呢？」→代码实查 runner.ts 补机制细节进语义段+纯查说明行——云端每日扫描发现监控账号新作品入观察池（lf_monitor_hits observing，observe_until=发布+N 小时），cron 每 12 小时 checkObservingHits 回查一轮最新互动数据（fetchContentStats 调 TikHub，赞数对照命中线），窗内爬到线=命中并通知、到窗尾仍未达标=转 expired「观察完成」不再盯——全程云端自动回查，用户无需补任何数据；c「web 端雷达页改，应该给到跳转链接」→纯查表第三列+修改表改后列+纯查纪律③+表格纪律四处附跳转链接 [web 端雷达页改](https://app.leadsradar.cn/radar)。纯 SKILL+mjs bump 批，引擎零改动无需重载插件。配套 radar 1.2.59 同批。⭐R96dw 1.2.126→1.2.127：交付硬化+观察期语义校正批（⭐2026-10-31 用户四连反馈：①「栗子在吗、栗子登录、栗子权益是一个东西？删一个删哪个？」→helper 菜单 00 行删「栗子权益」（登录与权益同款三区块模板重叠最高，撤菜单不撤触发词——喊「栗子权益/栗子会员」照常按三点五固定模板答）；②纯查宿主三跑偏（缺【扫描/监控设置】小标题/编造【修改结果】回顾块/云端行落表外散文行）→radar 纯查纪律四硬规（小标题必出/禁出修改结果/云端必须表格行/表头三列固定）；③「观察期设置针对我们的扫描还有效果吗？」→代码实查定论观察期仅云端监控生效（web monitoring/runner 唯一消费点——观察窗超期转观察完成，本机快扫深扫不吃）——executeScanSettings 回执 message 双分支+JSDoc 改口「命中条件对两端生效、观察期为云端监控观察窗」+mjs 工具 description/inputSchema 三处同步；④「云端监控还是没有成表格呈现」→云端行禁表外文字行纯查/修改两张表同规）。配套 radar 1.2.58+helper 1.4.31 同批。引擎+SKILL 混合批须重载插件。⭐R96dv 1.2.125→1.2.126：命中规则开窗+修改回执表格批（⭐2026-10-31 用户拍板「命中规则还有两条数据，也要可修改」「（云端监控）这个也要表格呈现」「加一个【修改结果】的小标题」）：①引擎 executeScanSettings 扩 hitMode/hitValue/observeHours 三参（命中条件 dynamic=均赞×N/follower=粉丝×N/fixed=固定赞 +观察期 1-168h，PUT /api/monitoring/settings 与插件「命中观察规则」同源，对两端生效需登录，未登录纯查静默省略/主动改回 LOGIN_REQUIRED）；②cloudSt 一次 fetch 两用（命中规则改动基线+回显三件去旧二次 fetch）+hitRule {text,mode,value,observeHours} 透出；③回显 message 双分支重写（改=已更新+当前+阴阳规则+两端生效说明；查=可调项清单扩命中条件/观察期）。配套 radar 1.2.57（流程 F 第 8 条扩三参+纯查表格补两行+修改交付【修改结果】改前改后表定版+云端监控行固定进表尾+全部非破坏性免确认直接改禁加「确定要改吗」类多问一句）+helper 1.4.30（转派清单补命中条件/观察期）同批。引擎+SKILL 混合批须重载插件。⭐R96du 1.2.124→1.2.125：报到菜单精简批（⭐2026-10-31 用户拍板情报栗指令列简化「栗子加/删对标（及监控），栗子扫对标/扫我的」+管家栗自己上表 00 行；查对标库撤出菜单——与栗子档案同属「查已有」包含关系，触发词照常认能力不丢；禁造「栗子设置」泛词——未注册且与管家栗教程/设置问答路由打架，设置入口一律用真触发词并写「栗子扫描（及监控）设置」）——纯 SKILL 批零引擎改动（helper 1.4.29：【AI员工】表 00-04 五行，00=管家栗前台经营者非链路工位能力语与开场定位语同款；情报行四组精简；L73 栗名呈现规范注记。SKILLS_LATEST 同批 bump）。⭐R96dt 1.2.123→1.2.124：扫描/监控设置升级批（⭐2026-10-31 用户拍板「这里的扫描规则要用表格呈现：首次扫描、新增扫描（插件端也统一称呼，复扫都叫新增扫描）、评论采集√/×（X条）+推荐区间」）——①称呼全端统一：首扫→首次扫描、复扫→新增扫描、深扫评论→评论采集（executeScanSettings 回执/changes/BAD_ARGS+深扫启用 message 同步换词，插件监控页弹窗 label 同批）；②升级「扫描/监控设置」（AskUserQuestion 拍板「只读回显+指路 web」）：已登录 executeScanSettings 顺带回显云端监控频率/起扫时间（fetchMonitorSettings 只读复用命中判定既有 import，401/失败静默省略，改值指路 web 端雷达页与插件端「详情↗」同款心智）；③mjs scan_settings description/参数描述同词+注册「栗子监控设置」触发词；④radar 1.2.56（流程 F 第 8 条输出模板表格化：首次扫描/新增扫描/评论采集√×（X条）三行+可调区间列+云端监控行）+helper 1.4.28（转派词补栗子监控设置）。引擎+SKILL 混合批须重载插件。⭐R96dr 1.2.122→1.2.123：触达回评互动闭环批（⭐2026-10-30 拍板）——①executeCommentReply 回评开窗（POST /api/analyze/quick-reply 同源透传，云端 AI 3 候选+aiReply 日限同池，intentWord 归一 A3/A2/A1）；②executeMarkLead 触达标记（mark_replied/mark_converted/mark_lost/reopen 四动作，无 lead_id 走 fallback 自动建档 ⭐233 同款）；③executeLeadRecords 线索账本（GET /api/leads/inbox 四档筛选+统计，云端 lf_leads 跨宿主聚合，拍板②）；④分发注册三 mode+UNSUPPORTED 列表补词；⑤mjs TOOLS/dispatch 双注册三工具（comment_reply/mark_lead/lead_records）。引擎批须重载插件。; /* ⭐R96dq 1.2.121→1.2.122：深扫阴阳规则+扫描设置开窗批（⭐2026-10-30 用户三诉求）：①agent-tasks 深扫装配阴阳规则——首扫 notesLimit=ruleLimit 一次干满（拆旧「单轮最多 10 条增量」护栏；ruleLimit=local_scan_settings.first 夹 1-50，与插件监控页本机扫描首扫口径同款），复扫维持 min(ruleLimit,10) 增量+excludeIds+skipWhenAllExcluded 只追新绝不重扫已入账作品；②深扫超时窗三层联动——引擎 withTimeout 按 Math.max(15min, ruleLimit×45s+240s) 动态放宽（50 条≈39min），mjs broker 兜底窗 15→45min（防长首扫引擎失联误报超时）；③新工具 leadsradar_scan_settings（executeScanSettings：读 local_scan_settings，四参 first/rescan/deepComments/deepCommentLimit 逐一 clamp 合法域改写回执 before/after 对照，不传参=纯查；mjs TOOLS schema+dispatch 双注册，has() 判存在+deepComments 宽认 "true"）；④SKILLS_LATEST radar 1.2.55（「栗子扫描设置」触发词+流程 F 第 8 条）+helper 1.4.26（转派清单补扫描设置→情报栗）。引擎+SKILL 混合批须重载插件。⭐R96do 1.2.120→1.2.121：随 radar 1.2.54 R96dn 复测两残留补——①引擎 top_leads 文本截断 30→120 字（agent-tasks 两处，SKILL 承诺「代表评论完整照抄禁截断」引擎先砍一刀，长评必截毁触达素材）；②radar SKILL 命中详情禁令硬化（复测实报宿主仍自画七列表——板块内禁画任何形式命中汇总表）；引擎+SKILL 混合批须重载插件。⭐R96dn 1.2.119→1.2.120：随 radar 1.2.53 扫对标三反馈批——引擎 agent-tasks platform 兜底从 URL 判（capture_profile 工具 schema 无 platform 参数且 additionalProperties:false，宿主只传 url+limit，task.platform 空默认恒 "xiaohongshu"，delta_note（≤999）与发布时间补采两处 platform==="douyin" 守卫对抖音号恒 false——R96dk note/R96cl/R96ct 补采修复从未真正执行过的真根因，修=非法/缺失时 /douyin\.com/.test(task.url) 判 douyin 与 executeDeepProfile 同款），SKILL 命中详情去表留块+代表评论触达素材位（top_leads 完整照抄禁截断）；引擎+SKILL 混合批须重载插件。⭐R96dm 1.2.118→1.2.119：随 radar 1.2.52+helper 1.4.25 触发词家族补全批——注册「栗子查对标」进情报栗（查对标库路径 R96ap 开窗本有，唯缺动作化注册词），纯 SKILL 批零引擎改动。⭐R96dl 1.2.117→1.2.118：随 helper SKILL 1.4.24 转派清单补全批——description 补「栗子删对标/栗子关监控→情报栗（取消监控等同认）」+员工表指令列同步+禁「办不了/指引手动操作」死令（用户实测「取消监控」被管家栗误接拒办）。纯 SKILL 批零引擎改动。⭐R96dk 1.2.116→1.2.117：随 radar SKILL 1.2.51 扫我的四反馈批——delta_note 极简「≤999」+命中详情七列表（A3 列/四象限列）+禁解释旁白三条；引擎侧 agent-tasks.ts 配套（delta_note 两处+fillHitQuadrant 四象限回填复用 R96bd lead-index 三函数+latestHitList 七字段扩展），引擎批须重载插件。⭐R96da 1.2.109→1.2.110：随 helper 1.4.20 权益明细+链接可点批——九行额度明细表（真源 daily-limits.ts）+https 裸 URL 链接铁则+pickAccountSnapshot 白名单 7→10 字段补透传 email/loginProvider/usageLocal（修「邮箱/到期接口没返回」假象，DB 真值齐全）。⭐R96cz 1.2.108→1.2.109 自更新源链 v2 批（修「怎么又不能更新了」宿主停更两批事故）：实锤链=宿主 unpkg 抖动→fallback jsdelivr@latest CDN 缓存滞后三版（npm 已 1.2.108/jsdelivr 实测还 1.2.106），261029 20:05 宿主 1.2.104 被喂滞后版 1.2.106 写盘重启、21:24 再查又拿滞后 1.2.107——永远追不上 npm 最新；进程 1.2.106 内置 SKILLS_LATEST 旧表（helper 1.4.18）致技能自检永远「全最新」，R96cy 的 helper 1.4.19 送不到。修法=fetchRemoteText 双源制（R79）改四步链：①unpkg@latest 实时主源②registry API 拿精确最新包版本（npmjs→npmmirror 双 API）③jsdelivr@精确版本（显式版本 URL 缓存键唯一无 latest 滞后，primary:true 判定可信）④jsdelivr@latest 降最后兜底（primary:false 滞后守卫保留）——R96bm 备源守卫只拦「报不新于进程」拦不住「报滞后但新于进程」，本批③步根除。运维止血（本机）：agent-deploy 1.2.108 已手动覆盖 D:\DirMove\Downloads\leadsradar-agent.mjs（WorkBuddy 文件型加载点，用户 Downloads 迁 D 盘——搜 C 盘 Downloads 那份 1.2.102 是旧残留无人跑），重启宿主即 1.2.108。上批 R96cy 引擎+web+SKILL 三栖批（管家栗六反馈，helper 1.4.19）——①Agent 采集 tab 彻底后台零闪烁（用户拍板「其他的也都有弹窗闪烁的情况，这不是bug？能不能不要？」推翻 r75 前台口径）：agent-tasks.ts 五处 openScratchTab 改 active:false（executeNoteDeep/executeDeepProfile/executeTrackDeep/executeAccountDeep 垫场+总决定点 foreground=false），节流风险（r75 当年评论滚动被拖慢→宿主超时）转实测监控，若拖慢明显再补抗节流（Worker 计时器方案）；②档案云端资产开窗——executeQueryLocalData accounts 源挂 cloud_counts（选题仓库五段明细/跟进线索/研究报告/创作成片，web /api/pipeline-counts 加 Bearer 双鉴权+creative 段，未登录/失败静默跳过宁缺毋滥不编数）；③权益开窗——web /api/monitoring/slots 扩 plan_expired_at/ai_credits 两字段+插件 phase2-api refreshPlanEntitlements 回填 planExpiresAt/aiCredits（修「到期日期没拿到」）；④邮箱口径——web pairing/status 与 /api/plugin/auth/me 对 wx_*@wechat.local 占位改发 null+login_provider=wechat，local-agent-connector readAccountSnapshot 扩 email/loginProvider/usageLocal 三字段（旧缓存同款兜底，显「微信登录（未绑邮箱）」）；⑤helper SKILL 1.4.19（档案云端三行真数+权益行+邮箱口径+总览不点名对标账号+帮助卡【下一步行动】三条禁档位/连接段）。引擎批须重载插件+web 部署（src/app/api 四 route）。上批 R96cx 引擎+SKILL 混合批（扫我的五反馈三修，radar 1.2.49）：①latest_notes status 四态 hit/obs/old_hit/old_obs——7天外补足条目独立标记，【命中详情】只收7天内命中、深扫快扫回填 filter status==="hit" 自动收敛（小米公司 3 条老命中不再重复深扫挂全0快扫行）；②scan_delta 加 followers_delta_note/total_likes_delta_note 抖音万位步进精度注记 + message 行获赞精度守卫（「1738.5万（→0）」复发修复）；③radar SKILL 1.2.49 自查/扫对标【命中详情】双改版（只收7天内命中 + 快扫块复刻流程A四宫格/档位标记条数占比表）+ ✅ 规则 old_hit 保留 + 增量括号照抄 delta_note 禁显（→0）。上批 R96cv 纯 SKILL 批（helper 1.4.18 栗子档案重排+查类模板化——用户拍板「档案应包括对标/选题/报告，采集记录考虑值不值得，线索农场/创作工厂要不要，【下一步行动】也要有，每一类单独查都要表格+下一步行动」）：①档案总览重排=本地三真值行（对标账号 accounts/研究报告 reports/采集作品 works 定位「素材池」——值得展示：采过的详情+评论都在库、下载/提取复用不占额度）+选题储备行（真源云端 R96bf 口径本地 works≠云端仓库禁充数，给入口不给假数）+表下云端指路行（线索农场 /farm=dm_reply 线索归档地、创作成片 /creative=web 创作工厂，本地无源禁编数）+【下一步行动】固定两条；②栗子查模板化——每类输出「完成行+表格+【下一步行动】」与总览同构：查对标/查作品/查报告/查评论（需带链接+A3 色点表）/查选题（本地无源直接指路云端真值禁 works 充数）。引擎零改动 ⭐R96cu 1.2.104→1.2.105：图文三形态+深扫账本达标放宽+登录权益固定模板批（⭐2026-10-29 用户拍板，含 R96ct 两处引擎改随批发版）：①引擎 OCR join 图号前缀——agent-tasks buildOcrSuccess 的 dataList.map 加 `〔图 ${i+1}〕\n` 前缀且图号保留原始索引（空图跳过不重排），宿主才有「按图分块」原料、封面→内页图片序列结构可读（仿写关键信息），回执 transcript 与 message【图片文字】段直接带分块；配套 creator SKILL 1.2.29 图文三形态模板（图字主型/正文主型/双强型决策树+图号禁重排硬规，与视频逐字稿模板并列）。②深扫账本达标放宽（用户实报「都是老作品为什么还重复深扫」彻查定谳：deepCapture 协议与监控页同源✅（includeDetails:false+includeComments:true+excludeIds+skipWhenAllExcluded，content 宽容键匹配），卡点=b21 达标口径「采满 min(30,总数) 才记账」vs 平台评论流每篇只吐 ~18 条 → 永不记账 → 每轮全量重扫去重失效；修=Agent 账本放宽 min(target, max(10, ceil(target/2)))「采满一半且至少 10 条」，target<10 仍按 target 全采不比旧口径严，仅动 Agent 本地账本 deepKey 不动监控页云端 b21 口径）。③helper SKILL 1.4.17 登录/权益固定模板（用户实报「栗子登录」输出缺会员到期时间与会员权益明细——三点五升「栗子登录与栗子权益」固定三区块【基本信息】【会员权益】【下一步行动】（与创作栗三区块同构符合 UI 互动规范），五字段一个不缺（昵称/邮箱/档位/到期/积分+监控位进权益行，plan=free 无到期写「—（免费档无到期）」null 禁编），权益按档位列已解锁项禁「对比参考」；「栗子权益/栗子会员」注册路由 description+派活路由表+权益问答指向同款模板）。④随批 R96ct 两处引擎改（对标扫描三连问根修）：补采日期提取重写为 8s 轮询版（图文 note 详情页 hydrate 数秒后「发布时间：」才进 innerText，旧 3.5s 定时读早了且 window._ROUTER_DATA 不存在/aweme detail XHR 不发三段式首段必 miss；改 async 轮询每 1s 重扫，正则优先级 RENDER_DATA createTime 毫秒戳→「发布时间：」锚定→裸全格式→短格式补年）+抖音粉丝精度口径（delta=0 且 douyin 显「±0.1万内（平台粉丝仅显万位，精度内无变化）」——DOM 模糊值步进 1000，真实周变化<1000 两次快照同值 diff 恒 0 非检测错误）。生效前提=chrome://extensions 重载插件+npm 发版+宿主完全退出重开+「栗子在吗」触发技能更新流（引擎+SKILL 混合批三件全做）。⭐R96cs 1.2.103→1.2.104：随 closer 1.3.9 AI 私信话术开窗批 bump（新 MCP 工具 leadsradar_dm_reply 19→20 与插件「AI 私信」同源同链；引擎 agent-tasks dm_reply 模式+web dm-reply route fallback 评论原文兜底；详见 closer 版本注释）。⭐R96cn 1.2.101→1.2.102：随 radar 1.2.48 扫对标四问题批次 bump（⭐2026-10-28 用户实报四问，破案与修法详见 radar 版本注释：①图解万物当年作品短格式日期 miss 三段式根修（SSR createTime 毫秒戳→全格式→MM-DD 补年）②「板块N」前缀=宿主技能未更新随批发版③总表增量 0=（→0）拍板④命中详情快扫 a3 四宫格+top_leads）——引擎侧 agent-tasks.ts 补采三段式+深扫回执命中快扫透出为本批改动，须重载插件生效。⭐R96cm 1.2.100→1.2.101：权益快照实时刷新根修（用户实报「怎么还是可以开监控」附实收「已开监控成功+库况行 监控位 1/0（会员权益）·权益：free」同屏矛盾——DB 实锤该用户 lf_plan=pro_monthly 未过期 lf_monitor_slots=8 即个人版会员非 free！根因=插件 planLabel/monitorSlots 是配对登录（/pairing/status）时一次性快照落盘永不刷新，用户 261026 前后 web 端升级个人版后插件仍显旧 free·0/0，而点亮走 web 实时 slotCapOf=8 正常放行——点亮成功是会员正当权益、纯插件显示误导；修三处：①web /api/monitoring/slots 双鉴权（插件 Bearer JWT 可调，参照 targets/[id] resolveUser 模式）+返回 plan_label；②插件 phase2-api 新增 refreshPlanEntitlements()=GET slots 成功回填 chrome.storage monitorSlots=cap/plan/planLabel（失败静默退旧值）；③引擎 query_local_data accounts 库况行拼「监控位 X/Y·权益：Z」前先刷新（Y/Z 用实时值）+executeAddMonitor 点亮成功后顺带 void 刷新（best-effort）；radar SKILL 1.2.47 不动（回执照抄口径无变化））｜前轮 ⭐R96cl 1.2.99→1.2.100：引擎四改+web 权益墙批（①latest_notes 7 天外补足改时间降序=最新 3 条②抖音 published_at 空补采详情页日期（≤3 条 scratch tab+注入正则）③executeAddMonitor 点亮 403 会员权益专门文案④库况行监控位 0/0 括「（会员权益）」；web PUT /api/monitoring/targets/:id status=active 非 self 且 slotCapOf=0 → 403 MONITOR_PLAN_REQUIRED）｜前轮 ⭐R96ck 1.2.98→1.2.99：我的账号自带监控重开+监控位计数批（引擎 agent-tasks.ts 三处：①executeAddMonitor 加 self 重开子流程——self 目标 paused→PATCH active 重开（与插件监控页胶囊 Toggle 同链路）、active→幂等「自带监控本来就在运行中」、未匹配→fallthrough 通用链路撞云端 self 防线兜底；②库况行监控位 X 计数改全量拉取——此前误传 fetchMonitorTargets("account", true) 在纯 self 集合滤 !x.is_self 恒 0（用户实报「监控位 0/0 但表内 ✅」矛盾）；③分支一 self 引导语补重开出路「对栗子说栗子加监控+账号名即可重开」）配套 radar SKILL 1.2.46（流程 F 第 3 条 self 场景回执口径三态）；附记：free 用户 PATCH 点亮无权益墙是 ⭐282 故意设计（目标保持 active 供本机引擎），云端 cron 阶段0 对 free 跳过不扫——回执「云端 24h 盯盘启动」对 free 属过度承诺，话术口径待拍板 | ⭐R96ci 1.2.97→1.2.98：监控三连报修复批（引擎+quota）（⭐2026-10-28 用户实报三连——①「目前监控的上限和权益没显示出来」②「栗子对标第一组内容应该加小标题【我的&对标账号】另外监控栏为啥我的账号显示—（监控未激活）而其他显示为—？这个应该统一吧」③「目前不能加监控貌似？」附实收取证：完成行「✅ 已开监控 ·「我是十四哦」」+【账号详情】「已入库 ✅（监控未激活——云端 24h 盯盘为会员权益）」+独立警示行「⚠️ 云端 24h 盯盘暂未激活——去插件监控页点亮胶囊」三处自相矛盾）：①executeAddMonitor add 后自动点亮（破③案）——根因=/api/monitoring/add POST 返回 target.status="paused"（R31-2 本地态默认）旧文案只注「监控未激活去插件点亮」甩锅给用户，但 updateMonitorTargetStatusByKey(...,"active") PATCH 无权益墙（run route 只认 status=active 不看 plan，插件监控页胶囊 Toggle 就是这一链路）——免费用户点亮即真盯盘，Agent add 成功后立即同源点亮等效用户手动点；cloudNote 两态定版：点亮成功「已开启云端监控」/点亮失败「云端监控未激活（原因）——可稍后在插件监控页点亮该账号胶囊」；②monitored 字段改最终云端口径（cloudActive=cloudNote==="已开启云端监控" 才 true）——治宿主拿 monitored=true 报「✅ 已开监控」再跟「⚠️ 未激活」自相矛盾；③query_local_data accounts 库况行扩三段（破①案「监控的上限和权益没显示出来」）——fetchMonitorTargets("account",true) 一次拉取三用（非 self active 计数=监控位 X+self 行组+失败时监控位段整体省略 -1 哨兵），库况行拼「· 监控位 X/Y · 权益：Z」：Y=getMonitorSlotsCap（quota.ts 新函数：优先 chrome.storage monitorSlots（/pairing/status setActivationState 权威落盘）缺失按本地 plan 推算 web codes.ts PLAN_CONFIG 同源 team24/pro·bootcamp·trial8/free0）、Z=storage planLabel（/pairing/status 下发），拉取失败省略段禁自编。⭐R96ch 1.2.96→1.2.97：扫我的号四板块+深扫 A3 线索挂钩批（⭐2026-10-28 用户实报自查三连——a「表1【我的账号】和表1.5【增量对比】可以合并，增量括号展示（↑↓代表数字变化），均赞不需要展示；板块=【我的账号】【最新动态】【命中详情】【下一步行动】」b「深采各4条作品采到4条评论我很难理解？4条作品只有4评论是否命中？不命中的是否也要深度采集？没有命中的命中详情是否要展示内容？」c「小米公司似乎不是最新的3条？发布时间02-16、09-28、05-19看看是啥原因」）：①引擎 deep_scan A3 挂钩（agent-tasks.ts 深扫回执段）——quickScanWithUserConfig 对采到评论跑 A3 四级分级（同引擎同口径），summary.deep_scan 增 a3_strong/a3_weak/a3_potential/a3_noise 四字段+message 深扫行改版「深扫：N 条最新作品的评论区 · 采到 M 条 · A3 线索 X 条（🟢🟠🟡⚪；评论已入本地库，作品卡可直接看）」——旧文案「N 条作品·采到 M 条评论」被读成「4 作品只有 4 评论」且不给命中答案，新文案说清对象（最新作品的评论区）+不筛命中（目的=给作品卡建 A3 快扫底座）+直接给线索计数；②radar SKILL 1.2.43 自查交付四板块定版——板块一【我的账号】合并总表（表1+表1.5 两表合一：粉丝/赞藏列增量进括号正=↑N 负=↓N 0/缺失=裸值不带括号，均赞列彻底退役用户拍板「均赞不需要展示」；表前 scan_delta 有才注「较上次扫描约 N 小时前」）+板块二【最新动态】（近7天作品表照抄 latest_notes；7 天外参考表帽行钉死「7 天外高赞 TOP3（按赞降序，非最新）」——用户实报小米 02-16/09-28/05-19 疑「不是最新的3条」：引擎口径=近 7 天不足 3 条时从 7 天外按赞降序只补足到 3 条（9.1万→3.1万→2.6万），是高赞优秀内容参考非最新作品、表序=赞降序非时间序，设计如此禁当 bug 报禁自作主张改时间序）+板块三【命中详情】（独立板块：有命中时 status=hit 行跨账号汇总表；无命中不出空表只一句「本轮无命中（规则：{hit_rule 原文照抄禁自算换算成具体数字}）」——用户实报宿主把「点赞 ≥ 均赞×1.5」自算成「≥1000」口径漂移；深扫 A3 线索>0 补一行计数）+板块四【下一步行动】不变；纪律六条 ④⑤ 同步更新（增量禁自编→括号版/hit_rule 原文照抄禁换算）；现扫路径 L314/315 深扫行与 hit_rule 照抄口径同款同步；扫对标作品表条款引用从「自查第 4 件」改「自查板块二【最新动态】」+7 天外帽行同款。 ⭐R96cg 1.2.95→1.2.96：我的号不占对标位（引擎批）（⭐2026-10-28 用户三连问「栗子在吗更新很久没提示」「我的账号也占用对标的位置，是否合理？」「我的小红书也变成对标了？这是谁操作的？」——AskUserQuestion 拍板「我的号不占对标位」：根因破案=R81e 采集即入库段无 is_self 概念，扫「我的号」（capture_profile）时 self 账号被自动写入本地对标库并计入「N/8」混占位，非人操作；服务端口径早已分离（add route L163 cap 计数 .neq("is_self",true)+L150 R88 防线拒 self 重复加对标），修复面纯在插件本地层 agent-tasks.ts 六处：①getSelfMatchKeys()/isSelfAccount() 共享匹配函数——云端 lf_monitor_targets self 分段为真源（fetchMonitorTargets("account",true) 过滤 is_self），URL 归一键 u:{url}+平台名键 n:{platform}::{name} 双键匹配，60s 内存缓存，未登录/拉取失败返回 null 调用方退旧行为不豁免（未登录无「我的账号」绑定谈不上 self 豁免）；②采集入库段 self 豁免——profile_posts 分支先判 isSelfAccount，self 号跳过位满预判+对标库入库整段（作品照常入全局 notes 库），summary.message 透出「我的账号——未占对标位（数据照常入库可查，「我的账号」自带云端监控，无需开对标监控）」防宿主误报已入对标库；③位满预判计数排除存量 self（recs0 按 selfKeys 剔除后再比 cap，与云端 neq 口径对齐，历史误入的存量 self 自动腾位）；④query_local_data accounts 源 items 过滤 self+库况行计数改真对标口径（全库-self，「对标库 N 个账号·对标位 N/M」与插件前端 MonitorTab competitorTargets(!is_self)/云端同源不割裂）；⑤add_monitor 两分支 benchmark.count/message 改 benchCount（排除 self）+目标本身是 self 时幂等分支给专属引导（「是『我的账号』——不占对标位，自带云端监控无需加对标/开对标监控」）；⑥remove_benchmark 腾位计数 rmBenchTotal 排除 self+删的恰是 self 号时 remaining 不减 1 边角（它本就不在真对标数里）。前端 MonitorTab 本就分段无需改。配套 radar SKILL 1.2.42（R96cc 双段呼应规退役——对标段=真对标不再出现「·我的」行，存量 self 自动清出对标段改由 self_accounts 独立行组呈现不计位，禁当 bug 报禁自作主张加回；扫我的号完成行补「我的账号——未占对标位」照抄口径）+helper SKILL 1.4.15（报到更新中提示：发现落后技能先输出「🔧 技能有更新：<栗名> vX→vY…正在自动更新（约 10-60 秒），稍等…」再逐个干活+只拉落后技能全文禁白拉 60-80KB——用户实报「栗子在吗更新很久没反应以为卡了」，技能全文拉取+写文件 10-60 秒静默干等像死机；长任务进度反馈不算 R96i 禁的实查旁白）。生效前提=chrome://extensions 重载插件+npm 发版+宿主完全退出重开+「栗子在吗」触发技能更新流（引擎+SKILL 混合批三件全做）。 ⭐R96ca 1.2.93→1.2.94：栗子关监控工具开窗（⭐2026-10-27 用户实报宿主「小米公司取消监控这一项我这边做不了——探栗没有提供关监控的接口」+拍板现在开工）：①TOOLS 表新增 leadsradar_pause_monitor（url/name/platform 三参与 remove_benchmark 同构，description 钉死「只停监控不删对标+含我的账号+LOGIN_REQUIRED 引导栗子登录+TARGET_NOT_FOUND 如实告知不重试」）；②dispatch 新增 case（mode=pause_monitor，30s 短任务）。配套引擎 agent-tasks.ts executePauseMonitor（登录墙→本地对标库匹配→云端 fetchMonitorTargets 查找含 is_self→updateMonitorTargetStatusByKey status=paused 与 MonitorTab handleToggle ③分支同源同链→本地 monitored 清 false 保留 monitors）+executeAgentTask 分流器 pause_monitor 分支+query_local_data accounts 源 monitored 口径改云端 active 键集（治图解万物「云端 active/本地 false」三源不一致误显：登录时 fetchMonitorTargets("account") 建 platform+target_id/target_name 双键集合，未登录/失败退回本地布尔）。radar SKILL 1.2.37 同批（关监控触发词+分流句）。（⭐R96bz 1.2.92→1.2.93：文案提取续查窗口根修（⭐2026-10-27 用户实报「栗子提取（图文）还是有问题，查根因」——图文 OCR 连续两次超时后第三次撞 QUOTA_EXCEEDED 白烧当日唯一额度，根因=续查窗口 5 分钟被两轮 120s 轮询烧光：第一次超时 2 分钟+宿主引导立即续查又 2 分钟，5 分钟窗口将尽，第三次重发时 getCachedTask 判过期连 taskId 一起删（云端结果永远领不回）后 hasRecentTask=false 走 consumeQuota 撞墙；修=anycopy.ts 三处——①getCachedTask 过期 5→15 分钟②新增 touchTask 轮询期间每次 query 后续期时间戳（过期语义从「距提交」变「距最后活动」，活跃任务不过期）③视频/OCR 两轮询循环挂 touch；agent-tasks.ts 配额墙注释+超时引导文案「5 分钟内有效」→「15 分钟内有效」；面板提取按钮走同一 lib 自动受益） ⭐R96by 1.2.91→1.2.92：本地扫描类极简定稿（引擎小改批）（⭐2026-10-27 用户拍板「栗子本地扫描类的都不要快扫，本地扫描就是一个核心目的，看一下有没有最新命中或者其他优秀内容，不要冗余的分析」——agent-tasks.ts capture_profile 分支 latest_notes 7 天外补足 olderByLikes 按赞降序：本地扫描核心=最新命中+其他优秀内容，补进表里的旧作按赞从高到低挑，非随便塞的旧数据；radar 1.2.36 同批（自查交付极简四件定稿：快扫块全砍/分析段全退役/每账号【近7天作品】表独立成段+纪律六条——快扫全砍+分析段全退役+账号详情退役+增量禁自编+命中照抄+account_scan/quick_scan 字段本地扫描不读不展示+现扫逐账号三行→两行+巡逻摘要爆款信号列删分析尾巴）） ⭐R96bx 1.2.90→1.2.91：自查命中为核心批（引擎批）（⭐2026-10-27 用户实报「栗子扫我的号」要以命中为核心+每账号7天最新作品列表+命中/增量+对齐插件本地扫描——回执此前无 7天列表/命中/增量字段，宿主拿会话记忆自创增量对比表：①profile_posts 分支补 latest_notes/week_count/week_hit_count/hit_rule——命中判定读云端监控设置 fetchMonitorSettings（与监控页「命中观察规则」同源：dynamic=点赞≥均赞×multiplier 默认1.5/fixed=固定值/follower=粉丝×multiplier 默认3，拉不到 fallback dynamic×1.5）+pickStripHits 同款口径（近7天组在前命中置顶时间降序/7天外殿后/不足3条补足/上限7条 status=hit|obs+in_week）；②scan_delta 增量快照——chrome.storage.local 键 lf_agent_scan_snap::{归一URL} 存 {ts,followers,total_likes,avg_likes} 本轮对比出 delta 再写回（首轮无 delta 快照从本轮起建，第二轮起才有真实增量）；③message 追加两行「近 7 天 X 条 · 命中 Y 条（命中规则…）」+「较上次扫描（约 N 小时前）：粉丝 ±N · 赞藏/获赞 ±N · 均赞 A→B」宿主照抄即得；radar 1.2.35 同批（自查交付六件定版+纪律五条）） ⭐R96bw 1.2.89→1.2.90：三报告瘦身+栗子报告合一入口批（引擎批）（⭐2026-10-27 用户三问复盘赛道深研报告领取实收：①报告结尾冗余「赛道机会简介是否同源素材+后面素材删除直接引导 web 端+栗子领取改栗子报告直接查看最新 7 条报告」②实收报告宿主自创验证段（引本地 15 条 10-26 旧笔记验证新报告+「三项明细没随回执返回」自由发挥）③三大报告链路断点检查——AskUserQuestion 三拍板：三报告统一瘦身/领取+列表合一/断点本批一起修）：①断点修复一 executeTrackDeep detached 段补落库——采集样本 putNotes+深采评论 flat 后 putComments 写 IndexedDB（此前用完即弃，宿主「栗子查/栗子报告」只能查到历史旧笔记被迫拿旧数据自创验证段；executeDeepProfile 同款落库），.catch 静默防落库失败拖垮主流程；②断点修复二 summarizeTrackDeepResult 策略/对标明细云端空返回显式报行——strategy_recommendations/benchmark_accounts 空时如实报「XX明细：本次未随回执返回——打开报告直达链接看全量渲染」（此前 filter(Boolean) 静默吞行，宿主看到「没返回」自由发挥编明细）；③改名 13 处「栗子领取→栗子报告」——agent-tasks.ts 11 处（喊栗子报告拿结果语义全局替换）+background/index.ts 1 处 lateResultSink 注释+local-agent-connector.ts 1 处 rememberLateResult docstring；配套 mjs 侧 20 处同名改名+claim_pending_result description 补合一入口语义（有 pending 先交付最新一份，无 pending query_local_data(source="reports") 列最近一览 ≤7 条）+query_local_data source description 补不传 keyword=全部报告时间倒序口径+radar 1.2.34/insights 2.3.7（SKILLS_LATEST 同批：三报告领取交付瘦身——删「按第五节模板说人话解读+【下一步行动】」改【完整报告】链接+「栗子查 XX报告」提示收尾；第五节模板适用范围限定仅深采等无 web 报告页的纯数据回执用；栗子报告合一入口规约）。生效前提=chrome://extensions 重载插件+npm 发版+宿主完全退出重开+「栗子在吗」触发技能更新流（引擎+SKILL 混合批三件全做）。⭐R96bv 1.2.88→1.2.89：扫描量可调开窗批（引擎批）（⭐2026-10-27 用户拍板「开窗也直接做了。扫描对标也一并调整了吧？」——R96bu 预告的下批引擎开窗提前到本批执行+radar 流程 E 现扫/流程 B-深深采参数同步开放用户可调）：①引擎 executeTrackDeep 三参数白名单 clamp——task.sample_count 列表采样 20-120（默认 80）/task.top_deep 深采条数 5-30（默认 20）/task.comment_limit 每篇评论上限 10-100（默认 20），Math.min(Math.max(floor)) 三段钳制非数字/越界自动回落默认，白名单 clamp 引擎侧单点收口宿主禁自己拦；②全参数化联动——progress 开页文案「采 N 条列表 + TopN 深采」/sendMessage deepCapture 协议（maxCount=sampleCount、notesLimit=topDeep、commentsLimit=trackCommentLimit）/pending 回执新增 params{sample_count,top_deep,comment_limit}+message 内实际生效数字；③AI 样本截断跟随——summarizeTrackDeepResult 新增 aiSampleCap 参数，采集路径用用户调过的 sampleCount，draft 命中（存量缓存）仍按 80 截断；④mjs TOOLS inputSchema/dispatch 双注册——leadsradar_track_deep_research 三参数透传，numOrUndef 只透正有限数（字符串/undefined/0/负数全不透走默认），description 注明「用户主动指定才透传默认不传，超范围引擎自动夹回，pending 转达照抄回执实际生效参数」；配套 radar 1.2.33+insights 2.3.6（SKILLS_LATEST 同批：radar 流程 E 现扫 limit 用户指定时按用户值传+流程 B-深深采 limit/comments_limit 口径；insights 能力 6 发起段三参数+pending 首段扫描规则行照抄回执实际值禁照抄 SKILL 示例默认 80/20）。生效前提=chrome://extensions 重载插件+npm 发版+宿主完全退出重开+「栗子在吗」触发技能更新流（引擎+SKILL 混合批三件全做）。⭐R96bs 1.2.87→1.2.88：自更新写盘 TypeError 根修（⭐2026-10-27 用户实报「怎么按你说的操作，更新了还是不对呢」——管家栗实查 MCP v1.2.84 停更四批（R96bo 1.2.85/R96bp 1.2.86/R96bq/R96br 1.2.87 全没到宿主），技能表也停在老 mjs 内嵌版本；三重取证定位根因：①~/.leadsradar-agent-update.json 留 lastError 铁证「The "data" argument must be of type string or an instance of Buffer...Received an instance of Object」②maybeSelfUpdate 写盘行 writeFileSync(tmpFile, remote, "utf8") 传了整个对象——R96bm 给 fetchRemoteText 加源标记改成返回 {text, primary} 时此处漏改，「有新版」分支每次必抛 TypeError→catch 静默→tmp 写盘即死磁盘永远换不成新版，10-26T11:14 最后一次成功自更新（1.2.80→1.2.83）之后全灭 ③17373 端口 node 进程（node E:\ai编程\LeadsFind\agent\leadsradar-agent.mjs 本仓库真源直跑）8:55 启动至今未死，用户「退出重开」WorkBuddy 未杀孤儿进程；修复=写盘改 remote.text 一处）+运维解锁=杀掉 17373 孤儿 node 进程→重启 WorkBuddy（进程直跑本仓库真源文件，修复随本文件已就位）→「栗子在吗」触发技能更新流（radar 1.2.31/insights 2.3.4 拉平）；unpkg@latest 已实测解析 1.2.87（CDN 传播正常，修复后自更新链恢复）。纯 mjs 单行修复批次，SKILLS_LATEST 不动，npm 1.0.57。⭐R96br 1.2.86→1.2.87：账号深度研究开进 Agent+我的账号透 url（⭐2026-10-27 用户六条咨询+追加实锤「我们现在聊的栗子研究『账号』就是『账号深度研究』啊，你还没接入？」+「两个的名单来源不一样？为啥不保持一致？选择可靠的名单？不应该都在云端有保存吗？」）：①executeAccountDeep 新增（mode=account_deep，mjs 新工具 leadsradar_account_deep_research）——与插件账号页「账号深度研究」按钮同源同引擎（AccountTab handleAccountDeep 同款链路），快慢双路径：本地素材够（IndexedDB 该号作品 ≥10 条且 ≥8 条有正文/逐字稿）走**快路径**直接装料提交云端 AI（2-6 分钟，不开采集页），素材不足走**慢路径**自动先深采 20 条垫场再提交（6-25 分钟，自动弹采集页翻动）；装料 summarizeAccountDeepResult——点赞降序取 Top80，<5 条 INSUFFICIENT_DATA 不提交 AI 不扣积分，Top20 深析（正文/逐字稿/评论样本）+basic 全量打包 accountSnapshotAsync 非阻塞云端 job；pollAccountSnapshotJob 15s×40 轮询；buildAccountDeepResult 落 AccountCollectionRecord.aiScan 本地缓存+七段 message（完成行+creditLine 积分权益口径（cost=0 念「本次 0 积分（首免/会员权益）」否则「消耗 N · 余额 M」）+【账号定位】行（positioning+受众+变现）+内容支柱（name+percentage+A3 率）+quick_advice 速判行+deep_link 报告直达行+完整报告引导行）；错误分流 INSUFFICIENT_DATA（可用作品不足 5 条不提交不扣分，指路深采垫场）/LOGIN_REQUIRED/QUOTA_EXCEEDED/ACCOUNT_DEEP_FAILED；计费非会员首免之后积分/次（job 创建即扣），慢路径垫场另占采集额度；②self_accounts 补透 url——selfList.map 透出主页链接（云端 MonitorTarget.url 三级兜底：target_url→source_url→按平台+账号名拼主页 URL），「栗子扫我的号」先查云端名单有 url 直接扫（名单来源两端统一：扫对标读监控池/扫我的号读云端 self 分段，都是云端真源 lf_monitor_targets）；配套 mjs TOOLS 定义+dispatch case 双注册。配套 radar 1.2.31+insights 2.3.4（SKILLS_LATEST 同批）。生效前提=重载浏览器插件+npm 发版+宿主经 leadsradar_get_latest_skills 更新 SKILL.md+完全退出宿主重开（引擎+SKILL 混合批三件全做）。⭐R96bp 1.2.85→1.2.86：赛道深度研究开进 Agent（⭐2026-10-26 用户实报「栗子研究 小红书 辅食」——洞察栗「栗子研究」统一入口三维度：作品拆解 R96at✅/账号深采 R96bo✅/赛道深研❌无工具，宿主只能指路插件手点）：①executeTrackDeep 新增（mode=track_deep，mjs 新工具 leadsradar_track_deep_research 16→17）——与插件赛道页「赛道深度研究」按钮同源同引擎（SearchTab handleKeywordDeep 同款链路：风控→排他锁→draft 复用（lf_kw_deep_draft_{kw} 1 天内跳采集，插件/Agent 双端互通）→积分预检（KEYWORD_DEEP_COST=8/keywordDeepTrial 首免，缓存缺失 fail-open，402 提前拦截不白等）→前台开搜索页 COLLECT_SEARCH_RESULTS maxCount:80+deepCapture{notesLimit:20,commentsLimit:20}→点赞降序 Top80→<3 条 INSUFFICIENT_DATA 不提交 AI 不扣积分→deepKeywordAnalysis 300s（纯 fetch SW 安全，refreshMeCache 静默 catch，R96bk sendMessage 坑不触达）→报告落 lf_track_reports_v1 留 10 份与插件同 key）；②fire-and-forget 异步闭环（executeDeepProfile 同款）——全流程 15-30 分钟超 mjs 5 分钟上限，采集启动后立即回 pending+detached 串行（withTimeout 25min 采集→summarize→lateResultSink 回灌），「栗子报告」claim_pending_result 领取；MV3 SW 保活双保险（COLLECT_PROGRESS 消息流+20s storage 心跳）；③收尾 putComments 补写（r96f 跨 origin 库坑：content 写页面 origin 库 background 读不到）+draft 保存；④错误分流 401→LOGIN_REQUIRED/402→QUOTA_EXCEEDED/AbortError→AI_TIMEOUT（附「超时不代表失败，稍后栗子查赛道报告确认」）/其余 TRACK_AI_FAILED。配套 insights SKILL 2.3.2（SKILLS_LATEST 同批）。生效前提=重载浏览器插件+npm 发版+宿主更新 mjs+技能完全退出重开（引擎+SKILL 混合批三件全做）。⭐R96bo 1.2.84→1.2.85：账号深度采集进 Agent+扫描对齐近7天口径+速览禁编预估分（⭐2026-10-26 用户实报两条——「栗子研究 小红书 辅食」宿主只给轻量速览+编造预估分「要调用插件的账号深度采集，按钮就是叫这个名字，我要调用的是我插件的能力，不是让你临时搞些没用的」+「目前的扫描也是不对，没有最新的7天更新或者最新7条的展示」）：①executeDeepProfile 深采引擎——capture_profile 工具新增 deep/comments_limit 参数，deep:true 与插件账号 Tab「深度采集」按钮同源同引擎（content deepCapture 协议：逐条进详情页采正文+全部评论，收尾自动评论意向快扫 A3 分级+账号四分类打分深采修正版），全号 10-25 分钟超 mjs 5 分钟任务上限→fire-and-forget 立即回 pending+detached 后台续等 26min+lateResultSink 回灌（「栗子报告」claim_pending_result 异步闭环，note_deep 同款模式）；MV3 SW 保活双保险=COLLECT_PROGRESS 进度消息流+20s storage 心跳；深采收尾补写 putNotes/putComments（r96f 跨 origin 库坑：content 写页面 origin 库 background 读不到）；②query_local_data 新增 monitor 源——云端 lf_monitor_targets+lf_monitor_hits 与插件监控页同源，pickStripHits 同款口径（近7天组在前命中置顶+时间降序→7天外组在后→不足3条补足→上限7条），回执 monitor_stats{targets_total,week_count,hit_count,by_account}+data 各条 in_week/status 标记，未登录 LOGIN_REQUIRED，BAD_ARGS 提示语扩含 monitor 六源；③executeDeepProfile finally closeScratchTab 补 tabId 参（TS2554）。配套 radar 1.2.29+insights 2.3.1（SKILLS_LATEST 同批）。生效前提=重载浏览器插件+npm 发版+宿主更新 mjs+技能完全退出重开（引擎+SKILL 混合批三件全做）。⭐R96bm 1.2.83→1.2.84：宿主 mjs 更新链断裂根修——jsdelivr 备源 CDN 滞后毒化 up-to-date 判定+24h 节流锁死（⭐2026-10-26 用户第三轮复测反馈管家栗 14:02 快照实锤：宿主跑 v1.2.80（npm 1.0.47）却报「up-to-date（MCP 已最新）」，技能「最新版」也停在 1.2.26/1.2.26/closer 1.3.8 等 npm 1.0.47 内嵌版本——而 npm 已发 1.0.50（1.2.83）五批更新全没到宿主；排查 ~/.leadsradar-agent-update.json 实锤事故链：昨日 18:43 查网时 unpkg 抖动走 jsdelivr 备源，CDN 缓存的 1.2.66 老包 < 进程 1.2.80 被误判 up-to-date 且写入 latestVersion 进节流状态→24h 节流窗内报到纯推定不再查网→checkDiskSelfNewer 读宿主自身 SELF_FILE 磁盘=进程也不报警→宿主停更五批（1.2.81 删对标工具/1.2.82 SW 直连引擎侧/1.2.83 续查免扣全部没到）——用户侧表现=反馈1「对标还是显示删不了」（删除工具在 1.2.81+）+创作栗报技能最新 1.2.26（radar 1.2.27 删对标指引没到）+额度问题今天耗尽明天恢复（引擎侧续查免扣已生效但 13:45 首烧到 14:0x 重试已过 5 分钟缓存窗，行为正确非 bug））：①UPDATE_CHECK_INTERVAL_MS 24h→30min——检查是一次轻量 GET（unpkg 秒回），24h 窗在误判时锁死太久，30min 窗下任何误判最多锁半小时，网络故障重试频率（每 30min 一次 GET）可忽略；②fetchRemoteText 返回改 {text,primary}（primary=unpkg 主源实时无缓存）——调用方两处适配；③maybeSelfUpdate 备源滞后守卫（根修）——备源报「不新于进程」不可信（CDN 缓存滞后实锤），本轮放弃判定：置 idle 且不写节流状态文件（lastChecked 不动→不锁节流→下轮报到再查）；备源报「新于进程」可信（滞后缓存不可能凭空多出新版本号）照常自更新写盘；④fetchLatestSkillMd 仅取 text 结构适配（技能滞后无害：旧技能等同维持本地版不降级，unpkg 恢复自然拉到新版，滞后守卫只在自更新侧做）。纯 mjs 批次（引擎与 SKILLS_LATEST 不动）。生效前提=npm 1.0.51 发版+宿主侧解锁：用户机 ~/.leadsradar-agent-update.json 的毒化节流状态需清除（已直接删除该文件），下次报到 maybeSelfUpdate（idle→查网）unpkg 拉 1.2.84>1.2.80 写盘 SELF_FILE→报 updated-pending-restart→重启宿主生效（删除工具/新技能/续查免扣引擎全量到达）。⭐R96bl 1.2.82→1.2.83：Agent 通道文案提取「超时白烧额度」根修——续查免扣+超时引导重发（⭐2026-10-26 用户复测 R96bk 交付后实报两条——反馈1「粉丝量有了，但是对标还是显示删不了」（粉丝已有值=bk3 对标库借用源生效✅；宿主仍答「只读边界只能手动删」=宿主 mjs/技能均未更新到 1.0.49/1.2.27，非代码问题——删除工具 leadsradar_remove_benchmark 在 mjs 1.0.48+ 已注册，须完全退出宿主重开拿新 mjs+「栗子在吗」触发技能更新流）；反馈2「依然失败，而且浪费了用户的额度！」（宿主交付「首次调用超时占掉了当日唯一额度、重试撞了额度上限」——额度能扣=bk1 SW 直连分支生效✅Receiving end 已根治；新根因=宿主侧 MCP 客户端超时先断，插件侧额度已扣（先扣额再调 AnyCopy 面板同账序），AnyCopy 云端任务仍在跑，宿主立即重试撞 QUOTA_EXCEEDED 白烧额度——插件 broker 超时实为 210s 足够 OCR 120s，炸点在宿主侧等不及）：①anycopy.ts 导出 hasRecentTask(url)（复用 getCachedTask 5 分钟去重缓存探测同 url 活跃任务）②agent-tasks.ts executeExtractText 配额墙前置续查免扣——hasRecentTask 命中则跳过 consumeQuota（本次为复用续查：getCachedTask 去重不重复提交、queryTask 查询不扣 AnyCopy 积分），quotaTail 显「续查上次任务（不重复扣额度）」；未命中走原扣额路径不变③超时回执引导——catch 块 /超时/ 命中时 message 追加「任务已提交云端仍在处理（额度已扣不白烧）：请把同一链接立即重发一次栗子提取，续查不重复扣额度（5 分钟内有效）」，宿主/用户超时后立即重发即免费拿云端已完成结果，额度不白烧。纯引擎批次 SKILLS_LATEST 不动。生效前提=chrome://extensions 重载插件+npm 1.0.50 发版后宿主完全退出重开（引擎侧续查免扣与引导文案只依赖插件重载，mjs bump 仅同步版本链）。⭐R96bk 1.2.81→1.2.82：Agent 通道 OCR「Receiving end」根修+我的账号粉丝对标库借用源（⭐2026-10-26 用户复测 R96bj 交付实报三条——反馈1「抖音的和我的账号还是没显示粉丝量」（梓悦爸爸做辅食—/肖予暄·我的—/小米公司·我的—三项残留）；反馈2「文案提取还是bug」（宿主已按新技能调 leadsradar_extract_text，插件返回「Receiving end does not exist」，Agent 图文 OCR 通道必炸）；反馈3「这次出现了提示删除的确认，但是还是显示」（宿主 mjs 未更新说无删除接口））：①quota.ts consumeQuota 加 SW 直连分支（根修反馈2——MV3 的 runtime.sendMessage 不投递给发送者自身 context，Agent 通道 executeExtractText 在 background 里调 consumeQuota 时 chrome.runtime.sendMessage 发 API_PROXY 给自己必抛「Receiving end does not exist」（面板链路有 window 从未触发，R96bi 教宿主图文必调 OCR 后才首次点亮这条深坑链路）；照 r78 phase2-api 先例 typeof window===undefined 分流——SW 直连 fetch /api/plugin/quota，面板链路 API_PROXY 中转原样保留）；②anycopy.ts fetchServerConfig 同款 SW 直连分支（同病同修——SW 直连 fetch /api/plugin/anycopy/config 产出等价 {ok,status,data} 结构）+reportAnyCopyUsage sendMessage 补 .catch 静默（fire-and-forget 承诺任何失败静默但 promise reject 未接）；③agent-tasks.ts self_accounts 粉丝加第三源 recordFollowerMap（根修反馈1——云端 MonitorTarget follower_count（POST 不落库恒 0）→noteFollowerMap 两源后，新增对标库记录借用源：accounts 分支构建 rmap（allRecords 经 backfillFollower 反查补齐后的粉丝值按 n:平台::账号名 索引），self_accounts follower_count 链第三位借用——「小米公司（抖音·我的）」借对标库同名记录 369.9万 根治；「梓悦爸爸做辅食」「肖予暄·我的」三源全空=数据真缺（R96aq 之前采集且无带粉丝作品落库），重采一次账号主页即挂头部指标并自愈回写）。反馈3 无代码修复=宿主 mjs 未更新非引擎缺工具（确认交互已出现=radar SKILL 1.2.27 已到，「没有移除对标接口」=宿主 mjs 还是旧版，工具注册在 mjs 须 npm 发版+宿主 mjs 更新（自更新 24h 节流急用重启宿主或 install -g）；本批 npm 1.0.49 连同删除工具一并带走）。纯引擎批次 SKILLS_LATEST 不动。生效前提=重载浏览器插件+npm 发版+宿主更新 mjs 完全退出重开（引擎批三件全做）。⭐R96bj 1.2.80→1.2.81：删对标开窗+粉丝缺失三源反查（⭐2026-10-26 用户复测 R96bi 交付实报两条——反馈1「为什么有的没展示粉丝量呢？」；反馈2「删除对标的能力还没开窗？」）：①executeRemoveBenchmark 新增（mode=remove_benchmark，mjs 新工具 leadsradar_remove_benchmark）——与 MonitorTab.handleRemove 同源三处同删：云端 lf_monitor_targets（removeMonitorTargetByKey）+本机监控表（saveMonitors 过滤+cloudId 存在时清理 lf_deep_scanned_${id} 等 4 个专属 storage 键）+本地对标库（deleteAccountCollectionRecord，Agent 对标位 N/M 计数源）；匹配链 url 精确→URL 互含退化→name 精确（platform 消歧）→name 互含；回执 message 含账号名/平台/监控连带停/对标位 N/M/云端说明；未匹配 ACCOUNT_NOT_FOUND 附对标库总数+指引先查对标库核对账号名；②query_local_data accounts 源粉丝三源反查——旧记录（R96aq 之前采集）account.follower_count 缺失时按 noteFollowerMap（getAllNotes 构建 u:URL归一/n:平台::作者名 两键 Map）三源反查（记录内作品→URL 归一→平台+作者名），命中即回写自愈（putAccountCollectionRecord），「梓悦爸爸做辅食 粉丝 —」根治；③self_accounts 块（我的账号）follower_count 兜底——云端 MonitorTarget 无该字段（POST 不落库），按 n:platform::target_name 反查 noteFollowerMap 补齐，「肖予暄/小米公司·我的 粉丝 —」根治。配套 radar SKILL 1.2.27（栗子删对标触发词+第 6 条破坏性操作确认规+超限首项改 Agent 直接删）。生效前提=重载浏览器插件+npm 发版+宿主更新技能重启（引擎批三件全做）。⭐R96bi 1.2.79→1.2.80：对标账号库四件套+图文提取两段制+监控=云端口径（⭐2026-10-26 用户实测反馈2/3/4 三条——「加入对标的如果满了应该列举全部的对标对象方便删除操作+单发栗子对标栗子监控无上下文也呈现全部对标账号库信息包括我的账号」/「图文类提取文案也要调用any2copy提取图片上面的文字，正文也附在里面；但是图片上面的往往才是主要内容」/「目前监控不存在本机监控中的监控，监控=云端监控，这类表述有误（本机监控中·云端 24h 未激活）」）：①executeAddMonitor 监控=云端口径——cloudNote 两分支重写（403 会员=「云端 24h 盯盘为会员权益（开通后自动开启），对标已入库不受影响」、paused=「监控未激活（云端 24h 盯盘为会员权益）——在插件监控页点亮该账号胶囊可激活」、active=「已开启云端监控」）+注释更新+message 尾部「监控命中与巡逻报告」→「监控命中与报告」，禁出现「本机监控」字样（R96bg「本机监控免费已开」权益口径退役——用户实报宿主压缩成「本机监控中·云端 24h 未激活」像已在监控）；②query_local_data accounts 源 self_accounts 透出——fetchMonitorTargets("account", true) 拉云端 self 分段（我的账号只在云端本地库无此数据），result.self_accounts=[{name,platform,follower_count,status,is_self}]，未登录/失败静默跳过宁缺毋滥不编（import 加 fetchMonitorTargets）；③executeExtractText 图文两段制重写——noteObj 加 body_text、norm URL 归一本地库反查正文、buildOcrSuccess 公共出口拼「【图片文字】在前为主+【正文】在后附带」两段（OCR 空返 null 走旧降级）、视频分支 ASR 空自动降级 extractImageOcr(workUrl, url) 不再报「请带 note 对象重试」（宿主只传 url 缺省按视频也能走通图文链路）。配套 radar 1.2.26+creator 1.2.26。生效前提=重载浏览器插件+npm 发版+宿主更新技能重启（引擎批三件全做）。⭐R96bh 1.2.78→1.2.79：抖音图文互动恒 0 根修（⭐2026-10-26 用户实报反馈2「抖音图文怎么没有完整的快扫？四宫格的部分没展示」——抖音 note 直达页 miss 🇲🇻 图文【作品详情】互动行空+【线索快扫】四分类帽行/双指数条全丢兜底到 A3 率四档版）：①根因双断（Chrome DevTools 实锤）——a. note 直达页（/note/{id}）SSR 直出，加载全程不发 detail XHR（performance resource 无 /aweme/v1/web/aweme/detail/），拦截缓存路恒 miss（R96ad「图集页无 video-player-* 互动栏结构」旧注释已过时，互动栏 DOM 实测全在 3.9万/146/2989/5174）；b. noteRoot 锁定失效——feed 流页每 slide=一篇笔记，note 图文直达页每 slide=图集的一张图（实测 37 个 slide 全叠同位置 rect），noteRoot 被圈进第一张图的 slide 容器，而互动栏（video-player-digg 等）在轮播容器外（diggAncestor=null），qsIn 恒 miss——两路全灭=互动恒 0→引擎 quick_scan 反查互动数不中→quadrant 五字段不透出→宿主兜底 A3 率帽行；②修复一处（douyin.ts 互动读取链尾部）——document 级唯一性兜底块：四互动数全 0 时 docOne 按 data-e2e（video-player-digg / feed-comment-icon || video-player-comment / video-player-collect / video-player-share）document 级查找，length===1 才读（直达页互动栏 DOM 唯一，document 级查找安全；feed 流/搜索弹窗多 feed-item 各有同名 e2e，唯一性校验不过自动放弃，防读上下篇、保 noteRoot 圈定原设计意图）。配套 radar SKILL 1.2.25（线索快扫措辞钉死，反馈3 同批）。生效前提=重载浏览器插件+npm 发版+宿主更新技能重启（引擎批三件全做）。⭐R96bg 1.2.77→1.2.78：对标超限警示+开监控权益口径（⭐2026-10-26 用户实测反馈两条——「这个对标位置12/8?超出上限了还能添加？」+「开监控是否考虑到我的权益？我这账号貌似没权益啊」）：①add_monitor 两分支回执（分支一幂等+分支二开监控）records.length>cap 时追加「——⚠️ 已超限（历史存量）：新账号已加不进，删旧账号或升级档位腾位」（12/8 是 R96ap 位满闸门前攒下的存量，本次是幂等确认非新增，但只显 N/M 不警示让用户误以为还能加）；②query_local_data accounts 源库况行同款超限追加；③cloudNote 两分支权益口径改写——paused 分支「本机监控免费已开（浏览器开着时自动巡逻）；云端 24h 自动盯盘未激活（会员权益）」+会员 403 分支「本机监控免费已开不受影响」（本机/云端是两个东西，只说未激活不说免费已开会让用户误以为开了不该开的权益）。配套 radar SKILL 1.2.24（学什么/避什么分行+超限三处+权益口径）。生效前提=重载浏览器插件+npm 发版+宿主更新技能重启（引擎批三件全做）。⭐R96bf 1.2.76→1.2.77：存选题双修批次（⭐2026-10-26 用户实测反馈2 两报——「已核对：选题仓库第 1 条 · 仓库现共 1 条，但是我的选题仓库明明还有好多，怎么才检测一条呢？」+「其次web端的一个bug，存的选题没有显示出封面图」）：①核对口径根治——web 端 src/app/api/topics/create-from-plugin/route.ts 两分支（already_exists+成功）各加 supabase count（lf_topic_cards user_id 匹配+archived=false 口径）回执透出 topic_total（云端选题仓库当前总条数服务端真源）；插件端 agent-tasks.ts executeSaveTopic 回执两分支透出 store.topic_total；phase2-api.ts CreateTopicResult 接口加 topic_total?: number；配套 creator 1.2.25 教宿主直读回执报「选题仓库现共 M 条（本条为最新入库）」，query_local_data(source="works") 本地反查充当仓库总量退役（本地是插件本机缓存非云端仓库——云端几十条本地 1 条时报「现共 1 条」口径事故根因）；②web 端选题卡封面根治（三断点叠加：normalizeAgentNote 丢 cover_data_url 字段/Agent SW 链路无人调 createCoverThumbnail 固化——UI 版函数依赖 document+Image DOM 在 SW 不可用/web 代理退化分支 307 跳 xhscdn 被 Referer 防盗链拦）——cover-thumbnail.ts 新增 createCoverThumbnailSW（fetch no-referrer→blob→createImageBitmap→OffscreenCanvas 144 方裁→convertToBlob WebP 0.72→arrayBuffer+btoa 分块→data URL，对齐 UI 版 ⭐318 口径只对小红书固化、抖音 douyinpic 直链 84 天长效不存，失败返空串静默降级）；agent-tasks.ts 三处——import SW 函数+normalizeAgentNote 补透传 cover_data_url（data:image/ 前缀校验）+executeSaveTopic 云端入库前 SW 固化（Promise.race 限时 3.5s，只对小红书且无现成 cover_data_url 时）；③配套 radar 1.2.23（下一步行动存选题升位，用户反馈1「下一步行动第一推荐应该是存选题」——纯 SKILL 改动同批）。生效前提=**重载浏览器插件**+npm 发版 leadsradar-agent+宿主经 leadsradar_get_latest_skills 更新 SKILL.md+完全退出宿主重开（引擎批三件全做才生效，与 R96be 纯 SKILL 批次不同）。⭐R96be 1.2.75→1.2.76：随 radar 1.2.22 账号快扫两处去重批次（①最爆行退役并进「学什么」首句 ②帽行禁拼行动词尾巴 ③列表块四行砍三行 ④旧插件兜底纯 emoji 表，详见 SKILLS_LATEST radar 注释）。纯 SKILL 批次零引擎改动，生效前提=npm 发版 leadsradar-agent+宿主经 leadsradar_get_latest_skills 更新 SKILL.md+完全退出宿主重开（无需重载浏览器插件）。⭐R96bd 1.2.74→1.2.75：quick_scan 透出单篇双轴四分类（⭐2026-10-26 用户指认「单篇快扫也是有四类Emoji类型的呀」——插件端单篇快扫卡（CommentScanView）本就有与账号四分类同族同源的双轴四分类，引擎 quick_scan 一直没透出，宿主说不了「这篇是💎双高型」）：①agent-tasks current_note 详情补落库 putNotes（r96g 同修法——content 侧 putNote 写页面 origin 库 background 读不到 r96f 同坑，详情单对象此前从未进引擎侧库；note_detail → capture_note_comments 是 SKILL 流程 A 固定顺序，落库后 comments 模式反查必命中）；②comments 模式 quick_scan 组装处 getAllNotes 按 URL 归一/platform_note_id 反查 note → calcTrafficIndex（log10 互动×平台系数）×calcNoteLeadIndex（密度65%+强度25%+趋势10%，含 earlyA3Rate/lateA3Rate 趋势）→classifyNoteQuadrant 四分，新增五字段 quadrant/quadrant_label/quadrant_icon（💎双高/🚀流量/🎯线索/💤双低）/traffic_index/lead_index——与插件 CommentScanView 同函数同口径；③反查不中/线索指数 0 分宁缺毋滥不透（旧插件/AI 跳过 note_detail 时 SKILL 兜底回退 A3 率帽行，radar 1.2.21 同批配套）。生效前提=重载浏览器插件+npm 发版 leadsradar-agent+宿主重启。⭐R96bc 1.2.73→1.2.74：agent-tasks account_scan 透出账号快扫两维分数+三大数据（⭐2026-10-26 用户复测 R96bb 后实报「目前还是不太对，没有展示两维评分，也没展示三大数据，学一下探一下<关键词>的赛道速览的表达方式」——快扫板块已常态出但只有四字分类：根因=classifyAccount 本就算两维分数 outbreakPower（流量分）/precision（线索分），四分类即按这两维切（流量≥60 且线索≥72=双高型），旧版 account_scan 只透 category/label/advice/basis 四字段把分数全丢，SKILL 层想画条也没数据）：account_scan 新增六字段——icon（插件端 surface-diagnose CATEGORY_MAP 定版四类 emoji 💎双高/🎯线索/🚀流量/💤双低随回执透出，宿主照抄即全端同源，旧版 SKILL 帽行写死 🎯 与线索型撞车）/traffic_score（outbreakPower）/lead_score（precision）/avg_likes/like_follower_ratio/hit_count（≥3 倍均赞爆款条数现算）；配套 radar SKILL 1.2.20【账号快扫】学赛道总览（判定帽行+两维 20 格字符条+三大数据行「均赞·赞粉比·爆款」+最爆行+建议行）+流程 A【线索快扫】同理（判定帽行+A3 率字符条）。生效前提=重载浏览器插件+npm 发版 leadsradar-agent+宿主重启。⭐R96bb 1.2.72→1.2.73：script 直解主路径补挂账号级指标根治「探一下账号」恒无快扫/粉丝赞藏（⭐2026-10-26 用户实报「怎么还是没有快扫呢？还是没有粉丝量和赞藏数据」——陆婷LT 交付【账号详情】无「基础数据」行+全文无【账号快扫】但 20 条笔记正常，R96ay 三修+R96az 展示层后仍复现，同批下载链复测 PASS 证明插件已是最新→修复存在未覆盖路径）：①根因实锤（Chrome MCP 三连排除法：active 页/后台 tab 20 秒/load 瞬间 __INITIAL_STATE__ 全完好 fans=6187x，后台节流与 load 时序两假设均推翻→页面侧排除，嫌疑收窄插件链路逐层排查）——content/index.ts COLLECT_ACCOUNT_NOTES isXHS 分支是双路径：优先从 DOM <script> 直解 __INITIAL_STATE__ JSON 拿笔记，笔记数 ≥ 目标量（20）时直达返回，collectXHSAccountNotes 只在不足时作 DOM 滚动补充——R96ay 三修（force 绕缓存/空壳不缓存/ready 重拉/AN1 对称挂载）全在被跳过的补充路径里；而 script 直解组装只读 state.user.notes，不读同在一个 state 的 userPageData（粉丝/获赞与收藏）也不挂 follower_count → account_stats 恒 0 → classifyAccount 门槛（followers>0 && notes.length>=5）恒不过 → 快扫四分类恒跳过；②五处修复（全 content/index.ts）——script 直解开头声明 scriptFans/scriptInter 主捕获变量+state 解析成功处 userPageData 对称提取（interactions 与 MAIN world 同构 [{type:"fans",count:"61873"}] count 是字符串，parseFanCount 兼容「6.2万」/纯数字；script JSON 里 userPageData 是纯对象、MAIN world 是 shallowRef 需 _value 解包，`"_value" in updRaw` 兜底两种形态）+background 兜底段双源同口径补捕获（stateData.fans/interaction 只补缺不覆盖）+extraRaw 映射保真透传 followerCount/totalLikes（DOM 补充路径 R96aq/R96ay 挂点）+最终 notes 组装三源合一挂 follower_count/total_likes（DOM 值优先 script 捕获值兜底，引擎 account_stats 取 notes 首个 >0 值与 collectXHSAccountNotes 挂点同语义）；③抖音无同款问题——douyin 分支直接走 collectDouyinAccountNotes（R96aq 已挂）零改动。纯引擎批次 SKILLS_LATEST 不动（account_stats 返回后 radar 1.2.19 已会渲染「基础数据」行+【账号快扫】）。生效前提=重载浏览器插件+npm 发版 leadsradar-agent+宿主重启。⭐R96ba 1.2.71→1.2.72：下载命名链标题回传根治「未命名笔记」（⭐2026-10-26 用户实报「这次又封面了，但还有个问题，怎么下载是是未命名笔记？」——【作品信息】表标题正确「i人在马尔代夫断联的一天🏝️🌊」但【下载目录】文件名/文件夹全是「探视频-未命名笔记…」「探栗-未命名笔记」）：①根因——Agent 通道宿主只传 url 不传 note 对象 → agent-tasks.ts normalizeAgentNote 空对象兜底 title=「未命名笔记」→ executeDownloadMedia 以 fallbackTitle: note.title 注入 → downloadNoteMedia 命名链 safeName=(note?.title || fallbackTitle) 全污染（文件名+文件夹名同源）；而提取层明明读得到真实标题（小红书 feed note_card.title/desc、源1A handler L1507 已返回 title 但 content 不消费、源1B note.title；抖音 detail desc、slim.desc 现成）——纯消费链断裂：DownloadUrlsResult 接口无 title 字段带不回；②五文件回传链——download-refresh.ts DownloadUrlsResult 加 title?:string；xiaohongshu.ts extractXHSDownloadUrls 源0 note_card.title/desc+源1A d.title/d.desc+源1B note.title/displayTitle/desc 三源回填；douyin.ts extractMediaUrlsFromInterceptedDetail 返回加 title（aweme_detail.desc）+extractDouyinDownloadUrls 源-1 slim.desc 兜底+源0 detail desc 覆盖；content/index.ts EXTRACT_DOWNLOAD_URLS urls 声明加 title；download-media.ts 策略1/策略2 捕获 extractedTitle→命名链改「提取 title > note.title > fallbackTitle」优先级+换行压空格（desc 兜底源多行文案防切断文件名）+updateTask 同步任务条标题+logActivity 一致；agent-tasks.ts 去重历史 title 优先用纠正后 st.title（防兜底名进回执）；③配套 creator SKILL 1.2.24（收尾防呆再硬化两条新形态：⑤禁镜像复述段⑥禁「两点说明」修复史/插曲自述段——用户同次实报指引行后仍跟「下载完成：…附在上方卡片」+「两点说明：①这次把封面也带下来了（上次只有视频）；②插件连接闪断…自动升级到 v1.2.70」两段）。生效前提=重载浏览器插件+npm 发版 leadsradar-agent+宿主重启。⭐R96az 1.2.70→1.2.71：账号展示「基础数据」并一行+全端账号结构同构（纯 SKILL 展示层改版零引擎改动，数据链 R96ay 已修常态有值；⭐2026-10-26 用户反馈「这个也展示在一行，改为基础数据：粉丝6.2万、赞藏30.3万」「注意抖音平台也要适配，抖音是点赞吧」「其他的账号也按照类似结构来」——配套 radar SKILL 1.2.19）：①流程 B【账号详情】紧凑四行版——粉丝/赞藏两行并成「基础数据」一行 `| 基础数据 | 粉丝 6.2万、赞藏 30.3万 |`（顿号分隔；标签随平台：小红书=赞藏、抖音=获赞——抖音主页官方口径叫获赞，全端统一标准同款；哪项有值写哪项、全无省整行禁编）；②「其他账号同构」三处——流程 F 对标交付表紧凑五行版（账号名（平台）并一行+基础数据并一行+对标监控合并行 `已入库 ✅（未开监控）`/`（监控中）`，旧八行砍成五行）、查对标库清单表四列 `|#|账号（平台）|基础数据|监控|`（旧五列平台/粉丝并拢）、C1 代表账号 TOP5 五列变体 `|#|账号|命中|基础数据|总赞|`（粉丝/赞藏并一列缺项省略）。生效前提=npm 发版 leadsradar-agent+宿主重启（SKILL.md 由宿主经 leadsradar_get_latest_skills 更新）。⭐R96ay 1.2.69→1.2.70：账号级数据 scratch tab 时序空壳根治（Chrome MCP 实测定位；用户实报「粉丝量等数据依然没有」「四宫格账号快扫的结论还是没有，账号快扫的其他信息也没有」）：①根因实锤——Agent 通道 profile_posts 走 openScratchTab 后台开页，content 注入可能早于页面 Vue hydrate，background MAIN world 读 __INITIAL_STATE__.user.userPageData 拿到空壳（interactions 空→fans:"0"、notes:[]）；Chrome 直开账号页实测数据完好（fans=61870/interaction=303127 都在），证明提取链没坏、坏在时序；②三修（全在 content/xiaohongshu.ts）——getXHSAccountStateFromPage 加 opts.force 绕缓存参数+空壳不缓存（旧版任何非 null 响应都写 sessionStorage 缓存，空壳被毒化 30s 后续重试恒命中坏值；改「有营养才缓存」：fans>0 或 notes 非空或 nickname 非空任一命中才写）、collectXHSAccountNotes 开头 state 拉取落空时 while 循环内 DOM 卡片出现（items.length>0=页面已 hydrate 铁证）做一次性 force 重拉回填 stateFansCount/stateTotalLikes、AN1 state 补充分支对称挂 follower_count/total_likes（旧版只有 DOM 分支挂，纯 state 补充场景 followers 恒 0 四分类恒跳过）；③效果链——account_stats.followers 常态有值→agent-tasks.ts classifyAccount 门槛（followers>0 && notes.length>=5）常态通过→summary.account_scan（category/label/basis/advice）常态返回→SKILL 1.2.18【账号快扫】四分类结论（双高型/流量型/线索型/双低型）+粉丝/赞藏行常态出。配套 radar SKILL 1.2.18（账号详情紧凑五行版+过程插曲零叙述+收尾禁令全流程化）。生效前提=重载浏览器插件+npm 发版 leadsradar-agent+宿主重启。⭐R96aw 1.2.68→1.2.69：小红书视频封面零落盘根治（Chrome MCP 实测定位）：①根因实锤——视频笔记 __INITIAL_STATE__.note.noteDetailMap 的 imageList[0].urlDefault 即封面（实测非空、HEAD 200 image/webp）、note.cover 字段不存在；宿主传入 note.cover_url 是采集时刻的限时签名 URL（sns-webpic-qc .../202610260846/{hash}/...，签名段=生成时刻），「探一下」拿到 note 隔时再「栗子下载」=签名过期 CDN 403，而下载层 imagesToDownload 的 note.cover_url 优先级反了 → 封面零报错丢失（MP4 用当次新签名流成功、仅封面缺席，用户实报「压根没下载封面」）；②四处修复——download-media.ts 封面优先级按平台分流（小红书当次提取 images[0] 恒新签名优先、note.cover_url 兜底；抖音维持 note.cover_url 优先，⭐307o 外部运营封面问题仍在）+kind 判定视频模式第一张恒「探封面-」（旧判定走 images[0] 路径恒误命名「探图-」）+xiaohongshu.ts 源1A cover_url 幽灵字段改有效消费（result.cover_url 返回类型无此字段下游从不读→改为 dl_images 空时补进 images）+download-refresh.ts targetId 补小红书 id 提取（旧版只提抖音→小红书源0 拦截缓存校验形同虚设）；③配套 radar SKILL 1.2.17（⭐R96ax 速报复核过程零展示+收尾语后零输出）。生效前提=重载浏览器插件+npm 发版 leadsradar-agent+宿主重启。⭐R96au 1.2.67→1.2.68：随 radar 1.2.16 流程 A 速报改版批次（【评论数据】→【评论展示】评论表格化+【线索快扫】四宫格/A3 统计/评论区解读三件套重构+数量上下限策略，详见 SKILLS_LATEST radar 注释）。纯 SKILL 批次无引擎改动，MCP 生效前提=npm 发版+宿主重启。⭐R96at 1.2.66→1.2.67：随 insights 2.3.0 单篇拆解重设计批次（⭐2026-10-25 用户拍板「单篇深度拆解有且只有一种，不存在所谓的轻量拆解」）：①新 MCP 工具 leadsradar_note_deep_research（13→14 工具）——与插件「深度拆解」按钮同源同引擎（deepDiagnosisAsync nonBlocking 两段式+resume）：本地已有报告免费解读（不扣券）→缺口 scratch 三连现采（详情/转写/评论占一个风控名额）→云端 L2 分析扣券（requestKey 幂等 5 分钟防重复扣）→同步等 3 分钟，超时转后台续等 7 分钟自动回灌待领取（「栗子报告」闭环）；②配套插件端 agent-tasks.ts note_deep 任务模式+connector rememberLateResult 晚到结果回灌通道+registerAgentLateResultSink 依赖注入装配（SW 保活分段 20s 轮询+storage 心跳）。生效前提=重载浏览器插件+npm 发版 leadsradar-agent+宿主重启。⭐R96as 1.2.65→1.2.66：随 radar 1.2.15+creator 1.2.23+helper 1.4.13 触发词动作化注册词批次（⭐2026-10-25 用户拍板五注册词「栗子存选题、栗子加对标、栗子扫对标、栗子加监控、栗子扫我的」——动词+对象自明，旧词栗子入库/栗子对标保留兼容仍认）：radar 分流表三行+流程 E 确认交互落规（≤5 号默认全量直接扫、>5 号先确认「全扫还是点名几个」、「栗子扫我的」首次要主页链接同会话沿用）+流程 F 注册词+9 处旧词替换；creator 存选题注册词三处；helper 家族词/报到菜单/派活路由 10 处。纯 SKILL 批次无引擎改动，MCP 生效前提=npm 发版+宿主重启。⭐R96aq 1.2.64→1.2.65：随 radar 1.2.14（账号数据双修+对标交付三改，⭐2026-10-25 用户实测「探一下 小红书@陆婷LT」+「栗子对标 @陆婷LT」五反馈）：①content 小红书/抖音列表采集 note 补挂 follower_count/total_likes——小红书 collectXHSAccountNotes 从 acctState.fans/interaction 解析、抖音 collectDouyinAccountNotes 读 user-info-fans/user-info-like 头部指标（label 兜底）；②引擎 profile_posts 回执新增 summary.account_stats{followers,totalLikes,noteCount,monitored}（monitored 查对标库 URL 归一匹配，首采入库竞态按未开报）——根治四分类恒跳过+【账号详情】恒无粉丝行双根因；③【账号详情】表加状态维度：|监控|未开/已开✅|+|对标|已入库✅|（位满例外「位满未入⚠️」），散文监控行全退役；④【一眼结论】散文板块退役→【账号快扫】挪到【作品数据】后扩三行（依据/最爆/建议，爆款点名收编进最爆行），学什么/避什么两短句紧随不带【】小标题；⑤对标完成行合并确认行——单行「✅ 已入对标库 ·「XX」· 平台（对标位 N/M）——」。旧对标库记录重采一次自愈粉丝数据。配套 content×2+agent-tasks×1，需重载浏览器插件生效。另随批 R96ar：小红书详情 work_type 图集否决权——≥2 张 imageList 且无真实视频流按 image 报（图集笔记 state 里 video 对象常驻/带 url，hasVideoUrl 兜底误命中致 16 图集被误标「视频」，用户实报「明明是图文怎么显示视频」；DOM 播放器特征对硬图集证据同款不覆盖），纯 content 修复 collectXHSNoteInfo 三处。⭐R96ap 1.2.63→1.2.64：随 radar 1.2.13（对标三改：①对标场景专用收尾语「对标入库，接着铺 🔍」——「挖」是线索语境对标不贴切；②查对标库开窗——不带链接的「栗子对标/查对标库/谁在监控中」→ query_local_data(source=accounts, limit=200)（引擎 accounts 源回执 message 附库况行「对标库 N 个账号 · 对标位 N/M」），清单表 monitored 列即监控名单；③对标位满撞墙落地——引擎 capture_profile 位满预判照采不入库+message ⚠️ 明说，修 Agent 通道位满 8/8 照样报成功且本地超 cap 的撞墙失效；配套 agent-tasks.ts 三处改造，需重载浏览器插件生效）。⭐R96ao 1.2.62→1.2.63：SKILLS_LATEST radar 1.2.12（对标交付三改：①【账号详情】补粉丝/获赞行——插件端 add_monitor 回执透出 data{followerCount,totalLikes,noteCount,benchmark{count,cap}}，宿主双源取回执优先；②确认行尾缀（对标位 N/M）——用户拍板「可加对标的上限要展示」，N=已用 M=上限从回执 benchmark 抄；③散文监控行退役并入【下一步行动】编号短句行——未开→1.开监控 2.探一下，已开→状态行+1.探一下 2.栗子对标；配套插件端 agent-tasks.ts 两分支回执改造，需重载浏览器插件生效）。⭐R96an 1.2.61→1.2.62：随 creator 1.2.22（提取交付定版五改：【文案拆解】改名【文案提取】+逐字稿第四行进表（路径+字数）/完成行必念文案提取额度 X/Y 两本账并排/【文案结构】三列表时间码(估算值标约)+结构点+简述/表后一句话评价值得模仿/下一步行动栗子创作优先——推翻 R96ak 三段式，钩子变体退役）。⭐R96am 1.2.60→1.2.61：栗子在吗自动更新三连——①修 selfUpdate 节流盲区（24h 推定最新不感知 npm 已换磁盘文件，重启提醒永不触发，R96 实测事故根因）：新增 checkDiskSelfNewer 每次报到读自身文件比对版本，磁盘>进程即置 updated-pending-restart；②maybeSelfUpdate 三处守卫防异步网络结果覆盖重启提醒；③helper 1.4.12 技能自检升级自动更新流（get_latest_skills 拿全文写入原路径）+重启防呆强化。⭐R96ag 1.2.56→1.2.57：随 radar 1.2.10（账号速览四改——账号详情表格化/快采口径禁意外表述/账号快扫接入学赛道总览/下一步行动全端去链接）批次 bump，攒批发版与 1.0.28 合并。⭐R96af 1.2.55→1.2.56：随 creator 1.2.18（图集嵌图退役改全附件——file:/// 嵌图手机端必裂+旧「嵌图即本体不另附」口径致零附件，三报同根根治）批次 bump，攒批发版与 1.0.28 合并。⭐R96ae 1.2.54→1.2.55：随 radar 1.2.9（赛道总览结构性分行定版——两轮空行软约束宿主均不执行，分数条+三指标改 `- ` 列表项硬约束，用户三报「竞争分和柱状图没回行」根治）批次 bump，攒批发版与 1.0.28 合并。⭐R96ac 1.2.53→1.2.54：随 radar 1.2.8（判定词上置组帽「红海词显示在两个分数上面」+空行防呆「段间必须空一行=敲两个回车，输出前自查」）+creator 1.2.17（指引行后冗余三重防呆——交付末 3 行定版/去重零复述/四条禁止清单）批次 bump。注：1.0.27/1.2.53 因终端环境故障未 publish，本版 1.0.28 合并两批云端首发。⭐R96ab 1.2.52→1.2.53：随 radar 1.2.7（测试1 复检四改——开工语贴任务不喊口号「✅ 收到！这就探<实际对象> 🔍」/开工语与完成行之间零过程旁白/收尾语换「情报到手，接着挖 🔍」/赛道总览分组+空行回行（手机挤行根因=markdown 单换行渲染合并，判定词跟两分数一组、三指标一组每行独立成段））+creator 1.2.16（测试2 唯一反馈「冗余多余文案都去掉」——附件指引行即交付最末一行之后禁再跟任何内容（bullet 块与「要继续」段全删）+零过程旁白）批次 bump，详见各技能版本注释。⭐R96aa 1.2.51→1.2.52：随 radar 1.2.6（测试2 四改——①【作品详情】两列标签表定版：|标题|全文原样|+|来源|作者·平台·类型|+|互动|👍💬⭐🔁|三行，标题放表头行自带加粗不依赖宿主执行**，三轮「上下结构/空行分段」摇摆终结（宿主对加粗独行+空行执行不稳连排实报两轮）；②删【采集速报】总标题行（完成行已含平台+词+条数冗余）；③赛道总览重排：字符条只画需求分/竞争分两行（分数条），集中度/均赞/最爆不画条与判定词合并一行纯文本「🔵 蓝海词（预估）· 集中度 68% · 均赞 197 · 最爆 1939（断层 9.8 倍）」，判定词###大标题退役；④【下一步行动】全流程三砍二（A/B/C1/E 均两句，用户拍板「只保留 2 个」））+creator 1.2.15（【作品信息】两列标签表与 radar 同款全端统一）批次 bump，详见各技能版本注释。⭐R96z 1.2.50→1.2.51：随 creator 1.2.14（附件数量原则「显示多少素材附多少附件」——附件与【下载目录】清单一一对应，视频 MP4+封面 JPEG 都要附（用户实报只出视频封面漏附），批量场景合并表同规+附件说明行归位——从收尾语前移到收尾语之后写「已附在下方」（附件实际渲染于消息下方）+分段铁则全链延伸——开工语/完成行/各区块/收尾语/附件行两两之间必须空行（用户实报开工语与完成行连排））批次 bump，详见 creator 版本注释。⭐R96y 1.2.49→1.2.50：随 creator 1.2.13（收尾栗子发言+禁长解释段+下一步行动两选项编号行+作品信息空行分段+去重转述极简）+radar 1.2.5（收尾栗子发言五处+作品详情空行分段）+insights 2.2.8/closer 1.3.8（收尾栗子发言）批次 bump——全端新规则「开头结尾都是栗子发言」，详见各技能版本注释。⭐R96x 1.2.48→1.2.49：随 radar 1.2.4（A 流程【作品详情】上下结构全端统一——单片=标题独行不截断、多片=表格截 18 字，信息密度决定形态）+creator 1.2.12（批量下载紧凑块+合并表交付定版）批次 bump，详见两技能版本注释。⭐R96w 1.2.47→1.2.48：随 creator 1.2.11 交付末尾附文件批次 bump（三区块模板化后宿主只照模板出表格忘推附件的根治——动作 2「宿主能发文件就直接推」R73 拍板落位为交付必经步骤，详见 creator 版本注释）。⭐R96v 1.2.46→1.2.47：随 creator 1.2.10 下载交付三区块再调+插件端 Agent 下载去重批次 bump：①【作品信息】两列窄表→上下结构（标题加粗独行+meta 一行「作者 · 平台 · 类型｜互动」——用户复检「标题为何如此之长」，抖音标题百字表格列必撑爆）；②【下载目录】三列→两列 |文件|位置|（格式列退役扩展名已表意、大小括号接文件尾、位置=📁完整落盘路径 inline code 第二行起「同上」、表下题注行退役）；③【下一步行动】编号短句行→三列表 |#|指令|干什么|（指令不带链接：同会话回喊指令词默认取最近交付作品链接，隔久先确认对象）；④插件端 executeDownloadMedia 去重闸：同作品已落盘且文件全在（downloads exists 校验）→跳过重下报「本机已有」+位置，面板手动下载=强制重下通道（lf_agent_download_history cap 100）。⭐R96r 1.2.43→1.2.44：随 helper 1.4.9 命令词区加待开发预告行批次 bump（栗子回复=直回评论区/栗子成片=一键成片，不占员工编号，详见 helper 版本注释）。⭐R96q 1.2.42→1.2.43：随 helper 1.4.8 报到菜单第三列改命令词简略式批次 bump（干什么列退役；命令词区展开各类型链接，详见 helper 版本注释）。⭐R96p 1.2.41→1.2.42：随 helper 1.4.7 报到菜单两区块批次 bump（两区块=【AI员工】三列表+【命令词】四行编号列表；行序情报→创作→成交→洞察；表头 AI员工/表标题 连接状态；工号 01-04；四栗口号上表；放弃复制诉求，详见 helper 版本注释）。⭐R96o 1.2.40→1.2.41：随 creator 1.2.8 下载场景四修（开工语/收尾语分动作贴任务+图集前 5 张 file:/// 嵌入+【下载清单】窄表化+尾部编号短句行）+radar 1.2.3 四流程【下一步行动】改编号短句行（紧凑化全端统一，推翻独立 code block 口径）+helper 1.4.6（头像禁图令范围注+边界注取消）批次 bump，三技能 SKILLS_LATEST 同步，详见各技能版本注释。⭐R96n 复测 1.2.39→1.2.40：随 helper 1.4.5 报到紧凑化批次 bump（定位语砍尾「帮你管理各项数据和 4 个 AI 员工」+指令并进表格括号缀 inline code+8 个独立 code block 退役——用户复测反馈「复制提示词 8 个卡片块占太长」「干什么与提示词合并作注释」，详见 helper 版本注释）。⭐R96n 1.2.38→1.2.39：随 radar 1.2.2 slogan 用户定版批次 bump（五栗开工语换用户定版五句全锚「获客」主张+管家栗报到定位语「经营你的AI获客团队」+A 流程详情表标题/作者两列分开，五技能 SKILLS_LATEST 全 bump，详见 radar/helper 版本注释）。⭐R96m 1.2.37→1.2.38：随 radar 1.2.1 slogan 体系+样式统一批次 bump（四栗开工语 slogan 体系定版+A 流程首列「标题（作者）」一体式+评论分档原始评论按点赞降序+快扫透明化「插件规则引擎判定非 AI 评分」+下一步行动理由极简 ≤8 字，五技能 SKILLS_LATEST 全 bump，详见 radar 版本注释）。⭐R96l 1.2.36→1.2.37：随 helper 1.4.2 报到呈现批次 bump（AI员工统称+栗名🌰规范+报到提示词独立 code block 复制按钮化，详见 helper 版本注释）。⭐R96k 1.2.35→1.2.36：随 radar 1.2.0 呈现公共骨架批次 bump（全流程 A/B/C1/E 骨架四段同构+A 四栏目窄表/四档表/温度计字符条+转发列守卫小红书不显转，详见 radar 版本注释）。⭐R96j 1.2.34→1.2.35：随 radar 1.1.9 复测三反馈批次 bump（①赛道总览字符柱状图 █░ 20 格——六列判定表退役 ②「下一步行动」三句分别复制·独立 code block 纯提示词 ③砍收尾钩子，详见 radar 版本注释）。⭐R96i 1.2.33→1.2.34：随 helper 1.4.1 管家栗报到 v3 简化批次 bump（介绍一句话化+报到块小节化【基本情况】【栗子报道】+头像全面退役+实查不出声+成本口径同步，详见 helper 版本注释）。⭐R96h 1.2.32→1.2.33：随 radar 1.1.8 复刻插件快扫批次 bump（C1 三栏目=采集作品/赛道总览/代表账号TOP5，判定词/话术与插件逐字同源+「下一步行动」三句可复制+C2 并入 C1，详见 radar 版本注释）。⭐R96g-2 1.2.31→1.2.32：随 radar 1.1.7 对勾新质批次 bump（✅/⚠️ 状态符号+速判表一表一判一行+「立即行动」更名+成本口径重定义只念有感知的，详见 radar 版本注释）。⭐R96g 1.2.30→1.2.31：随 radar 1.1.6 赛道速览 v2 批次 bump（三类分析+四岔口决策树只推一件，详见 radar 版本注释）。⚠撞号注记：历史日志小写「⭐r96g 1.2.11→1.2.12 HOST_LABELS」为另一条线。⭐R96f 1.2.29→1.2.30：随五技能派活三段式批次 bump（消息流弃图头像统一 🌰；管家栗任务复述+分配；专才栗一句开工语+完成汇报行，耗时读结果 duration_ms 禁编数字；配套插件侧 agent-tasks 透出 duration_ms）。⚠撞号注记：插件代码内小写 r96f 注释（Agent 通道评论落库）为另一条线，与本批无关。⭐R96e 1.2.28→1.2.29：随五技能头像化批次 bump（helper 版本呈现二态「MCP已最新/已更新 vX」数字不常驻；五栗消息流前缀真头像优先、🌰 兜底、三连后短前缀）。⭐R96d 1.2.27→1.2.28：随五技能微信对话体批次 bump（报到行名「插件连接」→「探栗连接」/版本口径=探栗版本；派活改微信式消息流 emoji 栗名前缀，推翻 R96c 不对话体拍板）。⭐R96c 1.2.26→1.2.27：随五技能视角纪律批次 bump（版本号来源写死 adapter.version/未登录 ⚠️/谁干活谁说话）。
+// ⭐R96b 1.2.25→1.2.26：随五技能仪式批次 bump（SKILLS_LATEST 五表+helper 报到三行定版）——内容详见各技能版本注释。
+// ⭐R96 1.2.24→1.2.25：用户可读话术「适配器」→「探栗MCP」（portBlocked/占用 hint ×2+get_latest_skills description+serverInfo title）——插件（浏览器里干活的）与探栗MCP（宿主↔插件管道）是两个实体，「适配器」是开发黑话用户看不懂，随 helper 1.3.5 报到表格改名同批。
+// ⭐R92b 1.2.23→1.2.24：EADDRINUSE 崩进程根修——R92 tryListen 重构成
+// ws({server:httpSrv}) 同端口复用时把 EADDRINUSE handler 误挂 httpSrv，而 ws 库会把底层 server 的 error 冒泡转发到
+// WebSocketServer 实例 emit（转发 listener 构造时先注册，wss 零 listener 同步 throw 崩进程，httpSrv 上后注册的 handler
+// 执行不到）——任何 17373 被占场景新实例必崩（WorkBuddy 实报 MCP -32000 Connection closed），修=handler 挂回 wss +
+// httpSrv 留兜底日志。 ⭐R89 1.2.22→1.2.23：卫星模式等待插件话术补探测链（⭐2026-10-23 用户实报「刚开机测栗子在吗没自动连上」，WorkBuddy 卫星只泛泛说「去浏览器确认插件启用+开关打开」——根因=卫星分支 step=1 hint 是写死文案，没接主 Broker 分支同款 disconnectDiagnosis() || extensionLaunchHint() 探测链，说不出「插件装在 Chrome 的 Profile 1，开那个窗口 5 秒自动连」的精确指引；卫星经 device.extension.state 已同步主 Broker lastClose（诊断可用）、Profile 探测是无状态扫盘（卫星可跑），两条都安全） ⭐R79 1.2.21→1.2.22：①适配器自更新——启动后台异步查云端最新 mjs（npmmirror→unpkg 双源 fallback），提取其中 ADAPTER_VERSION 比对，更新则 tmp+rename 原子覆盖自己（本地文件型宿主覆盖下载目录 mjs、npx 型覆盖 _npx 缓存内的自己，下次进程启动即新版；失败静默保持旧版、只升不降、24h 节流）；②connection_status 的 adapter.update 透出自更新三态（checking/up-to-date/updated-pending-restart）——升级挂「栗子在吗」常径不设专门触发词，宿主报到表格渲染「已自动升级，重启宿主生效」；③新工具 leadsradar_get_latest_skills（12→13 工具版判据）：技能落后时宿主取最新 SKILL.md 全文递给用户粘贴（技能库装在宿主手里无法代写）。云端生效前提=npm 发版 leadsradar-agent（自更新与技能下载的同一源头） ⭐R76 1.2.20→1.2.21：①connection_status 附 skills_latest 五技能版本表（识别技能落后+指路更新——宿主技能版本不可自动更，Agent 对照自检指路）；②R74/R75 期间加的工具（add_monitor/pair_login/get_daily_report，10→12）未 bump 版本号，复测无法分辨 mjs 新旧，一并 bump（v1.2.21=12 工具版判据） ⭐R56b 1.2.19→1.2.20：卫星登录态透传四处（中转宿主 loggedIn 恒 null 根修）+中转连接文案说人话（去宿主名硬编码黑话） ⭐msg11 1.2.18→1.2.19：AI 唤醒探栗 MCP——connection_status（「栗子在吗」探活指令）时 TL MCP 未运行则自动拉起（读 NM 注册表拿 exe 路径，detached spawn；只在交互信号点拉，不在 agent 启动时拉以尊重「托盘退出」；未装静默缓存跳过） ⭐B7b-P1 1.2.17→1.2.18：结果认领闭环（三原则 b 协议化——插件是结果的持有者与通知源，宿主是可断线重来的消费者）：①extension.hello 附未领取结果摘要 pendingResults[{taskId,mode,keyword,url,createdAt}]（connection_status 的 extension.pendingResults 透出，AI 开工前即知有存货）；②新 MCP 工具 leadsradar_claim_pending_result（领取插件侧已完成但无人认领的任务结果——超时/宿主重启后回来领，不占采集限额；走普通任务通道 mode=claim_pending_result，卫星模式自动兼容）；③device.extension.state 卫星透传摘要；④step=3 hint 有存货时提示「先领取再决定重发」（配合 1.2.17 的超时文案，AI 标准动作=超时→领取→查库→才重发，根除额度双耗）；⭐1.2.16→1.2.17：HTTP 模式默认端口 17374→17375（撞车根修：17374 是本地服务 Rust IPC 的 NDJSON 端口，agent HTTP 监听同端口时扣子等 HTTP 宿主把请求头打到 Rust → service.log 刷 bad json；改 17375 后两端口各归其主，已按 17374 配 URL 的宿主需改指 17375，可用 LEADSRADAR_AGENT_HTTP_PORT 覆盖）+ B3 断开原因钩子（插件断开的 close frame code+reason 不再丢弃：disconnectDiagnosis() 区分「开关关/桥不可用/浏览器被杀或插件被禁」给精准指引——旧版一律报「start chrome」实测无效指引；插件侧 reason 真源 local-agent-connector.ts stop()="LF Agent disabled"/stopForAvailability()="…not publicly available"，SW 被杀无告别帧=1006；卫星经 device.extension.state 同步诊断）；⭐A2/B7/B9 1.2.15→1.2.16：撞墙自修三连——①任务中断秒失败（插件断开即中止全部等待任务 TASK_ABORTED，旧版傻等 300s 超时，2026-10-16 杀浏览器实测抓到）；②撞墙文案自动探测插件所在浏览器+profile（扫 Chrome/Edge 各 profile 的 Preferences 找 unpacked 探栗 path，给出精确 start 命令——旧版「start chrome 开默认 profile、插件装在 Profile 1 → 桥永远不起」实测 bug）；③extension.account.update 登录态保鲜（解绑/登出实时同步，旧版冻结在握手值「解绑了仍显示已登录」实测）；⭐r96ze 1.2.14→1.2.15：卫星状态谎报根修（用户实报「未批准的 dsh 显示已连接可以开工」）——statusSnapshot 卫星分支旧逻辑借中转通道状态（主 Broker 与插件的连接）冒充自身就绪，未批准卫星恒报 step=3；新逻辑 selfPaired 标志（收到 purpose="session" 挑战=已配对、pairing=失效回退，SW 挑战类型即配对态真值），step 判定通道死→1/未配对→2/配对+通道→3，step=2 hint 明示「批准前任务会被拒绝别急着开工」（任务层本有 PAIRING_REQUIRED 门禁无越权，仅状态误导）；⭐r96y 1.2.13→1.2.14：欢迎文案 v2（「探一下」品牌动词融入全部示例，示例即激活词教学；删「不用记命令」与能力清单黑话）+ 对外文案 9 处旧菜单名「智能体接管」→「智能体连接」（r96r-5 改名时适配器侧漏网：hint/错误 message/description/log，宿主 AI 按旧名指路用户找不到菜单）；⭐r96t 1.2.12→1.2.13：HOST_LABELS 删 stepfun=「阶跃 AI」（渠道下线：用户拍板排除——自定义 MCP 入口未确认开放+用户量知名度低）；⭐r96g 1.2.11→1.2.12：HOST_LABELS 补 cherry=「Cherry Studio」/stepfun=「阶跃 AI」（CLI·进阶档扩容：codex 回归+cherry+stepfun，dsh 并入该档）；⭐r96e 1.2.10→1.2.11：HOST_LABELS 补 trae=「Trae」（Trae/编程 CLI 宿主：项目 .trae/mcp.json 配置拉起，本仓 dogfooding 实测）；⭐r96 1.2.10：HOST_LABELS 补 qwen-office=「千问办公」；⭐r93 1.2.9：dsh=「DeepSeek」；⭐r90c 1.2.8：HTTP 模式；⭐r86c 1.2.7：kimi-work；⭐r85b 1.2.6：doubao/feishu 多客户端各自 HOST；⭐r85 1.2.5：Windows 动态端口自愈；⭐r82 1.2.4：initialize 注入呈现规范；⭐r81 1.2.3：登录态；⭐r77c 1.2.1：密钥迁用户目录；⭐r76 1.2.0：多宿主中转 */
+const HOST_LABELS = {
+  "doubao-work": "豆包工作",
   // ⭐r85 字节系多客户端实测（用户已验证豆包客户端支持 stdio 连接器，与豆包工作同源）：
   // 每客户端一个 HOST 值 → 密钥分文件（指纹独立可配对）+ 适配器侧异宿主卫星共存（同开不互踢）；
   // 插件侧 doubao 独立宿主（批准卡跟胶囊走），设备名靠此处区分
-  doubao: "\u8C46\u5305",
-  feishu: "\u98DE\u4E66",
+  doubao: "豆包",
+  feishu: "飞书",
   workbuddy: "WorkBuddy",
   "kimi-work": "KimiWork",
-  coze: "\u6263\u5B50",
+  coze: "扣子",
   // ⭐r93 DeepSeek Harness（dsh）：一切皆插件架构，MCP 走官方 dsh-mcp-client（stdio），工具名带 mcp__leadsradar__ 前缀
   dsh: "DeepSeek",
   // ⭐r96g Codex 回归（r94 放弃后用户拍板回归，CLI·进阶档）：~/.codex/config.toml（TOML mcp_servers 段）
   codex: "Codex",
   claude: "Claude",
   // ⭐r96 千问办公：连接器入口「左侧连接器 → 添加」，支持粘贴 JSON / 手动填写（与豆包同款 STDIO 型）
-  "qwen-office": "\u5343\u95EE\u529E\u516C",
+  "qwen-office": "千问办公",
   // ⭐r96e Trae（编程 CLI 宿主首个）：项目 .trae/mcp.json 配置拉起，本仓 dogfooding 实测
   trae: "Trae",
   // ⭐r96g CLI·进阶档扩容：Cherry Studio（设置→MCP 服务器→添加服务器 STDIO）；⭐r96t 删阶跃 AI（渠道下线）
-  cherry: "Cherry Studio"
+  cherry: "Cherry Studio",
 };
-var HOST = (process.env.LEADSRADAR_AGENT_HOST || "doubao-work").toLowerCase();
-var HTTP_MODE = process.argv.includes("--http") || process.env.LEADSRADAR_AGENT_HTTP === "1";
-var HTTP_PORT = Number(process.env.LEADSRADAR_AGENT_HTTP_PORT) || 17375;
-var DEVICE_NAME = process.env.LEADSRADAR_AGENT_DEVICE_NAME || `\u63A2\u6817 Agent (${HOST_LABELS[HOST] || "\u672C\u673A"})`;
-var DEVICE_ID = `leadsradar-agent-${HOST.replace(/[^a-z0-9-]/g, "") || "local"}`;
-var KEY_FILE = join(homedir(), `.leadsradar-agent-key-${HOST}.json`);
-var LEGACY_KEY_FILE = join(__dirname, ".agent-key.json");
+
+const HOST = (process.env.LEADSRADAR_AGENT_HOST || "doubao-work").toLowerCase();
+// ⭐r90c HTTP 模式开关（提前声明：stdin EOF watchdog 需豁免）——扣子桌面端仅支持 Streamable HTTP；
+// 启动：node leadsradar-agent.mjs --http（或 env LEADSRADAR_AGENT_HTTP=1），默认端口 17375（⭐1.2.17 起：原 17374 与本地服务 Rust IPC 撞车致 bad json 刷屏，已迁移）可用 LEADSRADAR_AGENT_HTTP_PORT 覆盖
+const HTTP_MODE = process.argv.includes("--http") || process.env.LEADSRADAR_AGENT_HTTP === "1";
+const HTTP_PORT = Number(process.env.LEADSRADAR_AGENT_HTTP_PORT) || 17375;
+// ⭐r77f 修复：HOST 必须先于 KEY_FILE 声明——原顺序模板串取到 undefined（打包器降级 const→var 后 TDZ 消失），
+// 实际产出 .leadsradar-agent-key-undefined.json
+const DEVICE_NAME =
+  process.env.LEADSRADAR_AGENT_DEVICE_NAME ||
+  `探栗 Agent (${HOST_LABELS[HOST] || "本机"})`;
+const DEVICE_ID = `leadsradar-agent-${HOST.replace(/[^a-z0-9-]/g, "") || "local"}`;
+
+// ⭐r77c 密钥迁用户目录（按宿主分文件）：换 mjs 路径/清构建目录不再丢设备身份、不再触发重新配对批准
+// （实测坑：宿主连接器从 Downloads 换到 extension/assets 后新目录无密钥→新公钥→插件当新设备等批准）。
+// 兼容：首次运行自动从脚本同目录迁移旧密钥（.agent-key.json），既有配对不失效
+const KEY_FILE = join(homedir(), `.leadsradar-agent-key-${HOST}.json`);
+const LEGACY_KEY_FILE = join(__dirname, ".agent-key.json");
+
 function log(...args) {
   process.stderr.write(args.join(" ") + "\n");
 }
-var __extProfileCache = { at: 0, result: null };
+
+/* ⭐R96da 白名单 7→10 字段：补透传 email/loginProvider/usageLocal（插件侧 readAccountSnapshot 十字段早已返回，7 字段白名单把邮箱/登录方式/今日用量丢在 mjs 层，致管家栗报「邮箱/到期接口没返回」假象）。
+   ⭐R96cr 权益快照七字段白名单（extension.hello / account.update / 卫星 device.extension.state 三处共用）：
+   旧白名单只挑 loggedIn+nickname，引擎 readAccountSnapshot 扩的五权益字段（plan/planLabel/planExpiresAt/
+   aiCredits/monitorSlots）到 mjs 被丢——宿主问「我的权益」无数据源只能编造（pro_monthly 被报「免费注册档·
+   长期有效」实报）。null 安全透传；旧插件不带五字段=全 null（宿主按「没拿到」口径答） */
+function pickAccountSnapshot(a) {
+  if (!a) return null;
+  return {
+    loggedIn: a.loggedIn === true,
+    nickname: String(a.nickname || "") || null,
+    plan: typeof a.plan === "string" && a.plan ? a.plan : null,
+    planLabel: typeof a.planLabel === "string" && a.planLabel ? a.planLabel : null,
+    planExpiresAt: typeof a.planExpiresAt === "string" && a.planExpiresAt ? a.planExpiresAt : null,
+    aiCredits: typeof a.aiCredits === "number" ? a.aiCredits : null,
+    monitorSlots: typeof a.monitorSlots === "number" ? a.monitorSlots : null,
+    email: typeof a.email === "string" && a.email ? a.email : null,
+    loginProvider: typeof a.loginProvider === "string" && a.loginProvider ? a.loginProvider : null,
+    usageLocal: a.usageLocal && typeof a.usageLocal === "object" ? a.usageLocal : null,
+  };
+}
+
+/* ================= ⭐A2 插件定位探测（2026-10-16 冷启动实测 bug 根修） =================
+   场景：插件装在 Chrome Profile 1，宿主 AI 按旧文案「start chrome」打开默认 profile → 桥永远不起。
+   修法：撞墙时扫 Chrome/Edge 各 profile 的 Preferences/Secure Preferences，找 unpacked 探栗
+   （path 含 LeadsFind/leadsradar），给出精确的「浏览器 + profile」启动命令。10s 缓存防扫盘抖动。 */
+let __extProfileCache = { at: 0, result: null };
 function detectExtensionProfiles() {
-  if (Date.now() - __extProfileCache.at < 1e4) return __extProfileCache.result;
+  if (Date.now() - __extProfileCache.at < 10_000) return __extProfileCache.result;
   const found = [];
   const roots = [
     { browser: "chrome", dir: join(homedir(), "AppData/Local/Google/Chrome/User Data") },
-    { browser: "msedge", dir: join(homedir(), "AppData/Local/Microsoft/Edge/User Data") }
+    { browser: "msedge", dir: join(homedir(), "AppData/Local/Microsoft/Edge/User Data") },
   ];
   for (const { browser, dir } of roots) {
     let profiles = [];
-    try {
-      profiles = readdirSync(dir).filter((n) => n === "Default" || /^Profile /.test(n));
-    } catch {
-      continue;
-    }
+    try { profiles = readdirSync(dir).filter((n) => n === "Default" || /^Profile /.test(n)); } catch { continue; }
     for (const prof of profiles) {
       if (found.some((f) => f.browser === browser && f.profile === prof)) continue;
       for (const file of ["Secure Preferences", "Preferences"]) {
         const p = join(dir, prof, file);
         let text = null;
         try {
+          // Chrome 运行中可能锁文件：复制临时副本再读（对齐 install.ps1 同款技巧）
           const tmp = `${p}.lf-probe.tmp`;
           copyFileSync(p, tmp);
           text = readFileSync(tmp, "utf8");
           unlinkSync(tmp);
-        } catch {
-          continue;
-        }
+        } catch { continue; }
         try {
           const settings = JSON.parse(text)?.extensions?.settings || {};
           for (const v of Object.values(settings)) {
@@ -3823,8 +192,7 @@ function detectExtensionProfiles() {
               break;
             }
           }
-        } catch {
-        }
+        } catch { /* 半截 JSON 忽略 */ }
         if (found.some((f) => f.browser === browser && f.profile === prof)) break;
       }
     }
@@ -3832,8 +200,14 @@ function detectExtensionProfiles() {
   __extProfileCache = { at: Date.now(), result: found };
   return found;
 }
+
+/** 探测到插件位置 → 精确启动命令文案；探测不到 → null（调用方回落通用文案）
+ *  ⭐msg4-d 默认浏览器消费：小栗子设置页可固定默认浏览器（%APPDATA%\leadsradar\service\config.json
+ *  的 defaultBrowser，值 chrome|edge）——固定后只推荐该浏览器的启动命令（免宿主内多一轮选择对话）；
+ *  未固定（自动模式）保持并列全给（最近活跃在前）。 */
 function preferredBrowser() {
   try {
+    // 与 Rust 侧 config.rs service_dir() 同源：%APPDATA%\leadsradar\service\config.json
     const appData = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
     const cfgPath = join(appData, "leadsradar", "service", "config.json");
     const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
@@ -3848,154 +222,275 @@ function extensionLaunchHint() {
   if (!found.length) return null;
   const pref = preferredBrowser();
   if (pref) {
-    const pinned = found.filter((f) => f.browser === pref || pref === "edge" && f.browser === "msedge");
+    const pinned = found.filter((f) => f.browser === pref || (pref === "edge" && f.browser === "msedge"));
     if (pinned.length) {
       found = pinned;
-      const cmd2 = found.map((f) => `start ${f.browser} '-profile-directory="${f.profile}"'`).join(" \u6216 ");
-      return `\u5DF2\u6309\u63A2\u6817 MCP \u8BBE\u7F6E\u56FA\u5B9A ${pref === "edge" ? "Edge" : "Chrome"} \u4E3A\u9ED8\u8BA4\u6D4F\u89C8\u5668\u2014\u2014\u8FD0\u884C ${cmd2} \u6253\u5F00\u5B83\uFF0C\u63D2\u4EF6\u7EA6 5 \u79D2\u81EA\u52A8\u91CD\u8FDE\u540E\u91CD\u8BD5`;
+      const cmd = found.map((f) => `start ${f.browser} '-profile-directory="${f.profile}"'`).join(" 或 ");
+      return `已按探栗 MCP 设置固定 ${pref === "edge" ? "Edge" : "Chrome"} 为默认浏览器——运行 ${cmd} 打开它，插件约 5 秒自动重连后重试（⭐R96ez 自救仅尝试一次：没起来或没终端权限就停手，禁换姿势再试——找 exe 路径直启/换 shell/换 PowerShell 都不必；直接转用户引导：请用户手动打开浏览器点一下探栗插件图标，或到插件设置把「智能体连接」开关关一下再开）`;
     }
   }
-  const cmd = found.map((f) => `start ${f.browser} '-profile-directory="${f.profile}"'`).join(" \u6216 ");
-  return `\u5DF2\u63A2\u6D4B\u5230\u63D2\u4EF6\u88C5\u5728 ${found.map((f) => `${f.browser === "msedge" ? "Edge" : "Chrome"} \u7684 ${f.profile}`).join(" \u548C ")}\u2014\u2014\u82E5\u4F60\u6709\u7EC8\u7AEF\u6743\u9650\uFF0C\u8FD0\u884C ${cmd} \u6253\u5F00\u5BF9\u5E94\u7A97\u53E3\uFF0C\u63D2\u4EF6\u7EA6 5 \u79D2\u81EA\u52A8\u91CD\u8FDE\u540E\u91CD\u8BD5`;
+  const cmd = found.map((f) => `start ${f.browser} '-profile-directory="${f.profile}"'`).join(" 或 ");
+  return `已探测到插件装在 ${found.map((f) => `${f.browser === "msedge" ? "Edge" : "Chrome"} 的 ${f.profile}`).join(" 和 ")}——若你有终端权限，运行 ${cmd} 打开对应窗口，插件约 5 秒自动重连后重试（⭐R96ez 自救仅尝试一次：此命令没起来或没终端权限就停手，禁换姿势再试——找 exe 路径直启/换 shell/换 PowerShell 都不必；直接转用户引导：请用户在浏览器里点一下探栗插件图标，或到插件设置把「智能体连接」开关关一下再开，弄好说声复查）`;
 }
+
+/* ⭐R96di 浏览器 exe 探测表：旧 autoLaunch 走 `cmd /c start <别名>` 链实测不稳（实报「拉了 Chrome
+   40s×3 重试仍未回连」——start 经 cmd 别名解析可能拉错实例/引号链吃参数），根治=直启 exe 完整路径
+   （实测直启 chrome.exe --profile-directory="Profile 1" 后插件 20s 自动回连）。候选覆盖 x64/x86/
+   每用户安装三处标准位置。 */
+const BROWSER_EXE_CANDIDATES = {
+  chrome: [
+    join(process.env.ProgramFiles || "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+    join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+    join(homedir(), "AppData", "Local", "Google", "Chrome", "Application", "chrome.exe"),
+  ],
+  msedge: [
+    join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Microsoft", "Edge", "Application", "msedge.exe"),
+    join(process.env.ProgramFiles || "C:\\Program Files", "Microsoft", "Edge", "Application", "msedge.exe"),
+  ],
+};
+function resolveBrowserExe(browser) {
+  for (const p of BROWSER_EXE_CANDIDATES[browser] || []) {
+    try { if (existsSync(p)) return p; } catch { /* 权限异常换下一个 */ }
+  }
+  return null;
+}
+
+/* ⭐R92 自动拉起装插件的浏览器（用户拍板「宿主应该自动打开我的插件，为啥要额外操作？终端操作劝退小白」）：
+   插件未连 + 探测到插件所在浏览器/profile → 本进程直接 detached 拉起浏览器窗口（不再只给命令让用户/AI 去跑）。
+   节流 60s（重复拉只会开一串新窗口）；仅在宿主探活（connection_status → statusSnapshot step=1 hint 组装）时触发，
+   进程启动时不拉（用户没喊就别动他屏幕）。cmd start 的 "" 占位防带引号参数被当窗口标题吃掉。 */
+let __autoLaunchAt = 0;
+function autoLaunchExtensionHost() {
+  if (Date.now() - __autoLaunchAt < 60_000) return false;
+  const found = detectExtensionProfiles();
+  if (!found.length) return false;
+  const pref = preferredBrowser();
+  let targets = found;
+  if (pref) {
+    const pinned = found.filter((f) => f.browser === pref || (pref === "edge" && f.browser === "msedge"));
+    if (pinned.length) targets = pinned;
+  }
+  const t = targets[0];
+  if (!t) return false;
+  __autoLaunchAt = Date.now();
+  try {
+    // ⭐R96di 直启 exe 优先（数组参数 Node 自行加引号，profile 含空格安全）；探测不到才回落 cmd start 链
+    const exe = resolveBrowserExe(t.browser);
+    if (exe) {
+      spawn(exe, [`--profile-directory=${t.profile}`], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+      log(`[lf-agent] 已自动拉起装插件的浏览器：${exe}（${t.profile}）`);
+    } else {
+      spawn("cmd.exe", ["/c", "start", "", t.browser, `--profile-directory=${t.profile}`], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+      log(`[lf-agent] 已自动拉起装插件的浏览器：${t.browser}（${t.profile}，exe 未探测到回落 cmd 链）`);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* ================= Ed25519 设备身份（持久化，deviceId+公钥稳定，避免重复配对） ================= */
+
 function loadOrCreateKeys() {
+  // ⭐r77c 优先用户目录；没有则读脚本同目录旧密钥并迁移（保既有配对），都无才新生成
   for (const f of [KEY_FILE, LEGACY_KEY_FILE]) {
     if (!existsSync(f)) continue;
     try {
       const saved = JSON.parse(readFileSync(f, "utf8"));
       if (!saved.publicKey || !saved.privateKey) continue;
       if (f !== KEY_FILE) {
-        try {
-          writeFileSync(KEY_FILE, JSON.stringify(saved), "utf8");
-        } catch {
-        }
+        try { writeFileSync(KEY_FILE, JSON.stringify(saved), "utf8"); } catch { /* 迁移失败不阻断，沿用内存态 */ }
       }
       return saved;
-    } catch {
-    }
+    } catch { /* 损坏则尝试下一个来源 */ }
   }
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const entry = {
     publicKey: publicKey.export({ type: "spki", format: "der" }).toString("base64"),
-    privateKey: privateKey.export({ type: "pkcs8", format: "der" }).toString("base64")
+    privateKey: privateKey.export({ type: "pkcs8", format: "der" }).toString("base64"),
   };
   writeFileSync(KEY_FILE, JSON.stringify(entry), "utf8");
   return entry;
 }
-var keys = loadOrCreateKeys();
-var fingerprint = createHash("sha256").update(Buffer.from(keys.publicKey, "base64")).digest().subarray(0, 16).toString("hex").match(/.{4}/g).join("-");
+
+const keys = loadOrCreateKeys();
+/** 与插件端 fingerprintPublicKey 同算法：SHA-256(公钥 DER) 前 16 字节 hex，4 位分组 */
+const fingerprint = createHash("sha256")
+  .update(Buffer.from(keys.publicKey, "base64"))
+  .digest()
+  .subarray(0, 16)
+  .toString("hex")
+  .match(/.{4}/g)
+  .join("-");
+
 function signPayload(payload) {
   const privateKey = createPrivateKey({
     key: Buffer.from(keys.privateKey, "base64"),
     format: "der",
-    type: "pkcs8"
+    type: "pkcs8",
   });
   return edSign(null, Buffer.from(payload, "utf8"), privateKey).toString("base64");
 }
-var DEVICE = {
+
+const DEVICE = {
   deviceId: DEVICE_ID,
   publicKey: keys.publicKey,
   displayName: DEVICE_NAME,
   host: HOST,
   adapterVersion: ADAPTER_VERSION,
-  protocolVersion: PROTOCOL_VERSION
+  protocolVersion: PROTOCOL_VERSION,
 };
-var LIST_TASK_TIMEOUT_MS = 5 * 60 * 1e3;
-var NOTE_DETAIL_TIMEOUT_MS = 2 * 60 * 1e3;
-var AgentBroker = class {
+
+/* ================= Broker：等插件连入 + 任务收发 ================= */
+
+const LIST_TASK_TIMEOUT_MS = 5 * 60 * 1000; // 列表/评论类任务上限（对齐插件 5 分钟单任务纪律）
+const NOTE_DETAIL_TIMEOUT_MS = 2 * 60 * 1000;
+
+class AgentBroker {
   constructor() {
-    this.transfers = /* @__PURE__ */ new Map();
-    this.taskWaiters = /* @__PURE__ */ new Map();
-    this.lastProgress = /* @__PURE__ */ new Map();
+    /** @type {Map<string, {chunks: Map<number,string>, charLength: number, taskId: string}>} */
+    this.transfers = new Map();
+    /** @type {Map<string, {resolve: Function, reject: Function, timer: NodeJS.Timeout, response: any}>} */
+    this.taskWaiters = new Map();
+    /** @type {Map<string, any>} */
+    this.lastProgress = new Map();
     this.extension = { connected: false, extensionId: "", extensionVersion: "", sessionId: "", pendingResultCount: 0 };
     this.awaitingPairing = false;
     this.awaitingSince = 0;
+    /* ⭐r96ze 卫星自身配对态：SW 只对已配对设备发 purpose="session" 的挑战（未配对发 "pairing"）——
+       以收到的挑战类型为准。此前 statusSnapshot 卫星分支借中转通道状态（主 Broker 与插件的连接）
+       冒充自身就绪（用户实报：未批准的 dsh 显示「已连接可以开工」），任务层虽有 PAIRING_REQUIRED
+       门禁不致越权，但状态谎报会误导宿主 AI 直接开工然后撞墙 */
     this.selfPaired = false;
     this.lastDisconnect = "";
+    /* ⭐1.2.17 B3 断开原因钩子：插件断开时的 close frame（{code, reason, at}）——
+       插件主动断开会带 reason（local-agent-connector.ts stop()="LF Agent disabled" 开关关 /
+       stopForAvailability()="…not publicly available" 桥不可用）；SW 被杀（浏览器被关/插件被禁）
+       无告别帧 → code=1006。disconnectDiagnosis() 据此给精准指引，旧版只记时间不记原因，
+       文案一律「start chrome」——浏览器明明开着，实测无效指引（B3 缺陷） */
     this.lastClose = null;
+    /* ⭐R96gav 插件应用层活性打点：最近一次收到插件 JS 发来的任何 WS 消息（extension.ping 20s
+       一拍/challenge/task.progress/ack…）的时刻。协议层 pong 由浏览器网络进程自动回、不经插件
+       JS——「连接健康（15s 僵尸回收不触发）+ 任务却全部超时」= 插件 SW 事件循环冻结（JS 停摆，
+       消息进不来也回不去）。startTask 超时分支据此确诊：>45s 无应用层消息 → 报「通道冻结」并
+       指引用户重启浏览器/重载插件（用户实测「栗子触达」300s 超时后 query_local_data 重试 7 次
+       全超时十几分钟不自愈，旧话术只引导「先查库」，救援通道同被冻结堵死，白转 7 分钟） */
+    this.lastPluginMsgAt = 0;
+    /** @type {import("ws").WebSocket | null} */
     this.client = null;
-    this.downstreams = /* @__PURE__ */ new Map();
+    /** ⭐r76 多宿主中转：端口被「另一宿主」的适配器占用时不再互踢——本实例降级为卫星，
+     *  以 WS 客户端挂到占用者（主 Broker）上，共用同一条插件连接。插件协议原生支持
+     *  broker.hello devices 多设备 + authenticatedSessions 多会话（按 deviceId 验签），
+     *  因此卫星设备照常走 挑战→签名→会话→任务 全链路，插件侧零改动。
+     *  反向同理：本实例绑上端口后成为主 Broker，后来的异宿主实例会挂到本实例上。 */
+    /** @type {Map<string, {ws: import("ws").WebSocket, device: any}>} 主模式：挂着的卫星实例（deviceId → 连接） */
+    this.downstreams = new Map();
+    /** @type {{ws: import("ws").WebSocket, host: string, hostLabel: string, extensionConnected: boolean} | null} 卫星模式：到主 Broker 的中转连接 */
     this.relay = null;
+
+    /** ⭐411 端口冲突自适应：WorkBuddy/豆包重启时会「杀旧进程→拉新进程」，旧进程端口释放有竞态窗口。
+     *  旧版只打日志不重试 → 新进程永远没有 Broker，插件只能连到将死的旧进程（用户实报「重启后失联需拨开关」）。
+     *  改为：EADDRINUSE 时每 3s 用全新实例重试绑定（最多 20 次≈60s），旧进程一退立即接管。
+     *  ⭐r76 升级：EADDRINUSE 先探测占用者——同宿主孤儿走 takeover 自愈；异宿主进入卫星中转模式（不再互踢，根治「豆包和 WorkBuddy 轮番互踢、状态飘忽」）。 */
     let listenAttempts = 0;
     let takeoverSent = false;
+    /* ⭐r85 Windows 动态端口保留识别：EADDRINUSE 且探测占用者无应答（端口无监听也 bind 不上、
+       无进程可见）= Hyper-V/WSL 排除段圈走端口（豆包实测 23:22-23:38 十六分钟「连接器连接失败」
+       又「突然自愈」根因）。portBlocked 透出 statusSnapshot，绑定成功即复位 */
     this.portBlocked = false;
+    /** ⭐412 EADDRINUSE 时先礼貌踢掉占端口的旧实例（通常是宿主退出后的孤儿进程），再重试绑定 */
     const requestTakeover = () => {
       try {
-        const probe = new import_websocket.default(`ws://127.0.0.1:${PORT}/extension`);
-        const kill = setTimeout(() => {
-          try {
-            probe.terminate();
-          } catch {
-          }
-        }, 1500);
+        const probe = new WebSocket(`ws://127.0.0.1:${PORT}/extension`);
+        const kill = setTimeout(() => { try { probe.terminate(); } catch { /* noop */ } }, 1500);
         probe.on("open", () => probe.send(JSON.stringify({ type: "broker.takeover", fromDeviceId: DEVICE_ID })));
         probe.on("close", () => clearTimeout(kill));
         probe.on("error", () => clearTimeout(kill));
-      } catch {
-      }
+      } catch { /* 旧实例连不上也无妨，按原节奏重试 */ }
     };
-    const attach = (server) => {
+    const attach = (server, httpSrv) => {
       server.on("connection", (ws) => this.handleConnection(ws));
+      /* ⭐R92b EADDRINUSE handler 必须挂 wss（server 实例）：ws 库在 options.server 模式会把底层 httpSrv
+         的 error 冒泡转发到 WebSocketServer 实例 emit，且该转发 listener 在构造时注册（先于 attach）——
+         wss 上零 listener 即同步 throw 崩进程，后注册的 httpSrv handler 永远执行不到。
+         （R92 把 handler 从 wss 迁到 httpSrv 引发本 bug：任何 17373 被占的场景新实例必崩，
+         WorkBuddy 实报 MCP -32000 Connection closed、手动复跑实证栈
+         "Emitted 'error' event on WebSocketServer instance"） */
       server.on("error", (err) => {
         if (err?.code === "EADDRINUSE") {
-          if (this.relay) return;
+          if (this.relay) return; // ⭐r76 已进入卫星中转模式，不再抢端口
           if (listenAttempts > 20) {
-            log(`[lf-agent] \u7AEF\u53E3 ${PORT} \u6301\u7EED\u5360\u7528\u8D85 1 \u5206\u949F\uFF0C\u964D\u9891\u4E3A\u6BCF 30 \u79D2\u91CD\u8BD5\uFF08\u5360\u7528\u539F\u56E0\u89C1\u4E0A\u65B9\u63A2\u6D4B\u7ED3\u679C\uFF1B\u671F\u95F4 connection_status \u53EF\u67E5 portBlocked\uFF09\u3002`);
-            setTimeout(() => {
-              if (!this.relay) tryListen();
-            }, 3e4);
+            // ⭐r85 排除段可能圈端口几十分钟，20 次（60s）耗尽不再卡死——降频 30s 无限重试，
+            // 段漂走即自动恢复（进程空转成本≈每 30s 一次 bind 尝试，可忽略）
+            log(`[lf-agent] 端口 ${PORT} 持续占用超 1 分钟，降频为每 30 秒重试（占用原因见上方探测结果；期间 connection_status 可查 portBlocked）。`);
+            setTimeout(() => { if (!this.relay) tryListen(); }, 30000);
             return;
           }
+          // ⭐r76 先探测占用者身份（仅一次）：同宿主孤儿→takeover 自愈；异宿主→卫星中转（不再互踢）
+          // ⭐r85 探测结果落日志+portBlocked 标记：timeout/closed/error=无应答（EADDRINUSE 却无人监听）
+          //   → 大概率 Windows 动态端口保留段，透出根治命令而非让用户瞎等
           if (!takeoverSent) {
             takeoverSent = true;
             void this.probeOccupant(requestTakeover).then((v) => {
               if (v === "timeout" || v === "closed" || v === "error") {
                 this.portBlocked = true;
-                log(`[lf-agent] \u5360\u7528\u8005\u63A2\u6D4B\u65E0\u5E94\u7B54\uFF08${v}\uFF09\uFF1A\u7AEF\u53E3 ${PORT} bind \u88AB\u62D2\u5374\u65E0\u4EBA\u76D1\u542C\u2014\u2014\u5927\u6982\u7387\u88AB Windows \u52A8\u6001\u7AEF\u53E3\u4FDD\u7559\uFF08Hyper-V/WSL \u6392\u9664\u6BB5\uFF09\u5708\u8D70\uFF0C\u901A\u5E38\u51E0\u5341\u5206\u949F\u5185\u81EA\u52A8\u6062\u590D\uFF0C\u672C\u8FDB\u7A0B\u6301\u7EED\u91CD\u8BD5\u4E2D\u3002\u6C38\u4E45\u6839\u6CBB\uFF08\u7BA1\u7406\u5458 PowerShell\uFF0C\u8FD0\u884C\u4E00\u6B21\u5373\u53EF\uFF09\uFF1Anet stop winnat ; netsh int ipv4 add excludedportrange protocol=tcp startport=${PORT} numberofports=1 ; net start winnat`);
+                log(`[lf-agent] 占用者探测无应答（${v}）：端口 ${PORT} bind 被拒却无人监听——大概率被 Windows 动态端口保留（Hyper-V/WSL 排除段）圈走，通常几十分钟内自动恢复，本进程持续重试中。永久根治（管理员 PowerShell，运行一次即可）：net stop winnat ; netsh int ipv4 add excludedportrange protocol=tcp startport=${PORT} numberofports=1 ; net start winnat`);
               } else {
-                log(`[lf-agent] \u5360\u7528\u8005\u63A2\u6D4B\u7ED3\u679C\uFF1A${v}\uFF08self=\u672C\u5BBF\u4E3B\u5B64\u513F\u5DF2\u8BF7\u5176\u8BA9\u4F4D / other=\u5F02\u5BBF\u4E3B\u5C06\u8F6C\u536B\u661F\u4E2D\u8F6C\uFF09`);
+                log(`[lf-agent] 占用者探测结果：${v}（self=本宿主孤儿已请其让位 / other=异宿主将转卫星中转）`);
               }
             });
           }
-          log(`[lf-agent] \u7AEF\u53E3 ${PORT} \u88AB\u5360\u7528\uFF0C3 \u79D2\u540E\u91CD\u8BD5\u7ED1\u5B9A\uFF08${listenAttempts}/20\uFF09\u2026`);
-          try {
-            server.close();
-          } catch {
-          }
-          setTimeout(() => {
-            if (!this.relay) tryListen();
-          }, 3e3);
+          log(`[lf-agent] 端口 ${PORT} 被占用，3 秒后重试绑定（${listenAttempts}/20）…`);
+          try { httpSrv.close(); } catch { /* noop */ }
+          setTimeout(() => { if (!this.relay) tryListen(); }, 3000);
         } else {
           log(`[lf-agent] Broker error: ${err?.message}`);
         }
       });
+      httpSrv.on("error", (err) => log(`[lf-agent] httpSrv error 兜底: ${err?.message}`)); // ⭐R92b 防漏网
     };
     const tryListen = () => {
-      if (this.relay) return;
+      if (this.relay) return; // ⭐r76 卫星模式下不监听端口（主 Broker 负责插件连接）
       listenAttempts += 1;
-      const server = new import_websocket_server.default({ host: "127.0.0.1", port: PORT, path: "/extension" }, () => {
-        listenAttempts = 0;
-        this.portBound = true;
-        this.portBlocked = false;
-        this.wss = server;
-        log(`[lf-agent] Broker \u5DF2\u76D1\u542C ws://127.0.0.1:${PORT}/extension`);
-        log(`[lf-agent] \u8BBE\u5907\u300C${DEVICE_NAME}\u300D\u6307\u7EB9\uFF1A${fingerprint}`);
-        log(`[lf-agent] \u7B49\u5F85\u63D2\u4EF6\u8FDE\u63A5\uFF08\u63D2\u4EF6 \u2192 \u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u8FDE\u63A5 \u2192 \u6253\u5F00\u5F00\u5173\uFF09\u2026`);
+      /* ⭐R92 头像静态路由：ws 同端口（17373）挂 GET /chestnut/{n}.webp——宿主 AI 菜单里的头像图
+         （markdown ![]() 指向本机端口，聊天宿主本地渲染即可拉到）；图在 npm 包 assets/ 白名单内，
+         本地开发（agent/ 无 assets）404 属预期。路径正则 \d+ 白名单防目录穿越。 */
+      const httpSrv = createHttpServer((req, res) => {
+        const m = /^\/chestnut\/(\d+)\.webp$/.exec((req.url || "").split("?")[0]);
+        if (m) {
+          try {
+            const buf = readFileSync(join(__dirname, "assets", `chestnut-${m[1]}.webp`));
+            res.writeHead(200, { "Content-Type": "image/webp", "Cache-Control": "public, max-age=86400" });
+            res.end(buf);
+          } catch { res.writeHead(404, { "Content-Type": "text/plain" }); res.end("chestnut not found"); }
+          return;
+        }
+        res.writeHead(404, { "Content-Type": "text/plain" }); res.end("not found");
       });
-      attach(server);
+      const server = new WebSocketServer({ server: httpSrv, path: "/extension" });
+      httpSrv.listen(PORT, "127.0.0.1", () => {
+        listenAttempts = 0;
+        this.portBound = true; // ⭐412 端口绑定成功（statusSnapshot 用它区分「端口被另一宿主占用」与「插件未开」）
+        this.portBlocked = false; // ⭐r85 排除段漂走/占用者让位，绑定成功即解除保留态标记
+        this.wss = server;
+        log(`[lf-agent] Broker 已监听 ws://127.0.0.1:${PORT}/extension（含头像路由 /chestnut/{n}.webp）`);
+        log(`[lf-agent] 设备「${DEVICE_NAME}」指纹：${fingerprint}`);
+        log(`[lf-agent] 等待插件连接（插件 → 设置 → 智能体连接 → 打开开关）…`);
+      });
+      attach(server, httpSrv);
     };
+    /** 卫星中转断开后回到端口竞争（主 Broker 可能已退出，端口已释放） */
     this.retryBindAfterRelayLoss = () => {
       listenAttempts = 0;
       takeoverSent = false;
-      setTimeout(() => {
-        if (!this.relay) tryListen();
-      }, 300);
+      setTimeout(() => { if (!this.relay) tryListen(); }, 300);
     };
     this.wss = null;
     this.portBound = false;
     this.clientExtensionId = null;
     tryListen();
   }
+
   send(obj) {
     if (this.client && this.client.readyState === this.client.OPEN) {
       this.client.send(JSON.stringify(obj));
@@ -4003,39 +498,43 @@ var AgentBroker = class {
     }
     return false;
   }
+
   handleConnection(ws) {
+    /* ⭐413 身份握手模型：连接进来先挂监听，等 broker.join 报明 extensionId 后才接纳。
+       - 同 extensionId（同一浏览器刷新/重连）→ 顶替旧连接
+       - 异 extensionId（另一浏览器/另一 profile 的探栗）→ 回 broker.busy 并断开——
+         根治双实例互搏：旧模型「新连接无条件顶替」导致两个实例轮番互踢，
+         proof 永远发给「下一个顶替者」，双方验签都走不完（豆包联调狂刷挑战无 proof 的根因）。 */
     let joined = false;
     let sessionReady = false;
     let pokeTimer = null;
+    /* ⭐413 传输层活性检测：浏览器自动回协议层 pong（无需插件配合）。
+       插件 SW 被杀但 TCP 未断时连接变僵尸，占着单座席导致后续重连被 busy 拒——15s 无 pong 强制回收。 */
     let lastPong = Date.now();
-    ws.on("pong", () => {
-      lastPong = Date.now();
-    });
+    ws.on("pong", () => { lastPong = Date.now(); });
     const pingTimer = setInterval(() => {
-      if (Date.now() - lastPong > 15e3) {
-        log("[lf-agent] \u63D2\u4EF6\u8FDE\u63A5 15s \u65E0 pong\uFF08\u50F5\u5C38\u8FDE\u63A5\uFF09\uFF0C\u5F3A\u5236\u56DE\u6536\u5EA7\u5E2D");
-        try {
-          ws.terminate();
-        } catch {
-        }
+      if (Date.now() - lastPong > 15000) {
+        log("[lf-agent] 插件连接 15s 无 pong（僵尸连接），强制回收座席");
+        try { ws.terminate(); } catch { /* noop */ }
         return;
       }
-      try {
-        ws.ping();
-      } catch {
-      }
-    }, 5e3);
+      try { ws.ping(); } catch { /* noop */ }
+    }, 5000);
     const pokeHandshake = () => {
       if (sessionReady) return;
+      /* ⭐r76 发给「当前连接」（探测者或待批准中的插件）而非 this.client——
+         探测场景 ws !== this.client，用 this.send 会让 probeOccupant 永远收不到身份声明 */
       try {
         ws.send(JSON.stringify({ type: "device.hello", protocolVersion: PROTOCOL_VERSION, device: DEVICE }));
-      } catch {
-      }
-      pokeTimer = setTimeout(pokeHandshake, 5e3);
+      } catch { /* noop */ }
+      pokeTimer = setTimeout(pokeHandshake, 5000);
     };
-    setTimeout(() => {
-      if (!joined && !sessionReady) pokeHandshake();
-    }, 1e3);
+
+    /* ⭐r76 连接建立 1s 后仍未 join（probeOccupant 探测者 / 卫星候选）→ 开始 poke 身份声明，
+       供占用者身份识别（异宿主→卫星中转，同宿主→takeover 自愈）。
+       插件正常时序毫秒级 broker.join，不受影响；插件侧收到 poke 会重入 beginDeviceHandshake，幂等收敛。 */
+    setTimeout(() => { if (!joined && !sessionReady) pokeHandshake(); }, 1000);
+
     ws.on("message", (raw) => {
       let msg;
       try {
@@ -4043,108 +542,110 @@ var AgentBroker = class {
       } catch {
         return;
       }
+
+      /* ⭐412 takeover 是服务端管理消息，必须在 join 门槛之前放行：
+         新实例 EADDRINUSE 时以 WS 客户端身份发接管请求，不会先 join——若被 join 门槛挡住，端口永远让不出来（⭐413 回归修复）。 */
       if (msg.type === "broker.takeover") {
+        // 新实例接管：旧实例（含宿主退出后的孤儿进程）收到后让出端口。
+        // 校验来源也是本家族适配器（deviceId 前缀一致），避免任意本地进程踢端口。
         if (String(msg.fromDeviceId || "").startsWith("leadsradar-agent-")) {
-          log(`[lf-agent] \u6536\u5230\u65B0\u5B9E\u4F8B ${msg.fromDeviceId} \u7684\u63A5\u7BA1\u8BF7\u6C42\uFF0C\u8BA9\u51FA\u7AEF\u53E3 ${PORT} \u5E76\u9000\u51FA\u3002`);
-          try {
-            ws.close(1e3, "superseded");
-          } catch {
-          }
+          log(`[lf-agent] 收到新实例 ${msg.fromDeviceId} 的接管请求，让出端口 ${PORT} 并退出。`);
+          try { ws.close(1000, "superseded"); } catch { /* noop */ }
           setTimeout(() => process.exit(0), 300);
         }
         return;
       }
+
+      /* ⭐r76 卫星适配器挂入：异宿主实例（豆包工作/WorkBuddy 并存）不再互踢端口，
+         改为挂到本 Broker 上共享插件连接。attach 是服务端管理消息，须在 join 门槛前放行。 */
       if (msg.type === "device.attach") {
         const attId = String(msg.deviceId || "");
         const isFamily = attId.startsWith("leadsradar-agent-") && attId !== DEVICE_ID;
         if (!isFamily || this.relay) {
           try {
             ws.send(JSON.stringify({ type: "device.attach.reject", reason: "not-allowed" }));
-            ws.close(1e3, "reject");
-          } catch {
-          }
+            ws.close(1000, "reject");
+          } catch { /* noop */ }
           return;
         }
         const device = msg.device && typeof msg.device === "object" ? msg.device : { deviceId: attId };
-        ws.__lfDownstreamId = attId;
-        sessionReady = true;
+        ws.__lfDownstreamId = attId; // 标记：后续该连接的消息走卫星路由（join 门槛前放行）
+        sessionReady = true; // ⭐r76 卫星连接无需插件握手流程，停掉 poke 轮询
         if (pokeTimer) clearTimeout(pokeTimer);
         this.downstreams.set(attId, { ws, device });
-        log(`[lf-agent] \u536B\u661F\u9002\u914D\u5668\u6302\u5165\u4E2D\u8F6C\uFF1A${String(device.displayName || attId)}\u2014\u2014\u4E0E\u672C\u8BBE\u5907\u5171\u4EAB\u540C\u4E00\u6761\u63D2\u4EF6\u8FDE\u63A5`);
+        log(`[lf-agent] 卫星适配器挂入中转：${String(device.displayName || attId)}——与本设备共享同一条插件连接`);
         try {
           ws.send(JSON.stringify({
             type: "device.attach.ok",
             host: HOST,
             hostLabel: HOST_LABELS[HOST] || HOST,
-            extension: { connected: this.extension.connected, extensionId: this.extension.extensionId }
+            extension: { connected: this.extension.connected, extensionId: this.extension.extensionId },
           }));
-        } catch {
-        }
+        } catch { /* noop */ }
         this.broadcastDevices();
+        // ⭐R56 卫星挂入即推一次当前插件状态（含登录态）——否则插件一直在线无状态变化时，卫星要等到下次断/连才拿得到 account
         this.notifyDownstreamsExtension(this.extension.connected);
         return;
       }
+
+      /* ⭐r76 卫星连接的后续消息（device.task.start / device.proof / device.task.cancel 等）：
+         join 门槛前按来源连接路由，不与插件连接的 broker.join 流程混淆 */
       if (ws.__lfDownstreamId) {
         this.handleDownstreamMessage(ws, msg);
         return;
       }
+
       if (!joined) {
         if (msg.type !== "broker.join") return;
         const joinerId = String(msg.extensionId || "");
         const holder = this.client;
         const holderOpen = holder && holder !== ws && holder.readyState === holder.OPEN;
         if (holderOpen && this.clientExtensionId && this.clientExtensionId !== joinerId) {
-          log(`[lf-agent] \u62D2\u7EDD\u8FDE\u63A5\uFF1A${joinerId || "(\u65E0\u8EAB\u4EFD)"}\uFF08\u5F53\u524D\u6301\u6709\u8005 ${this.clientExtensionId} \u6B63\u5728\u4F7F\u7528\uFF09`);
+          log(`[lf-agent] 拒绝连接：${joinerId || "(无身份)"}（当前持有者 ${this.clientExtensionId} 正在使用）`);
           try {
             ws.send(JSON.stringify({ type: "broker.busy", heldBy: this.clientExtensionId }));
-          } catch {
-          }
-          setTimeout(() => {
-            try {
-              ws.close(1e3, "busy");
-            } catch {
-            }
-          }, 100);
+          } catch { /* noop */ }
+          setTimeout(() => { try { ws.close(1000, "busy"); } catch { /* noop */ } }, 100);
           return;
         }
         if (holder && holder !== ws) {
+          /* ⭐413 顶替前通知被踢方：同 ID 两实例（同路径加载的多 profile）轮番互顶时，
+             被踢方收到 superseded 后主动退避，互搏在 1~2 轮内收敛 */
           try {
             holder.send(JSON.stringify({ type: "broker.superseded", by: joinerId || "unknown" }));
-          } catch {
-          }
-          setTimeout(() => {
-            try {
-              holder.close(1e3, "superseded");
-            } catch {
-            }
-          }, 50);
+          } catch { /* noop */ }
+          setTimeout(() => { try { holder.close(1000, "superseded"); } catch { /* noop */ } }, 50);
         }
         this.client = ws;
         this.clientExtensionId = joinerId;
         joined = true;
-        log(`[lf-agent] \u63D2\u4EF6\u5DF2\u8FDE\u5165\uFF08${joinerId || "\u672A\u77E5ID"}\uFF09\uFF0C\u53D1\u9001 broker.hello`);
+        this.lastPluginMsgAt = Date.now(); // ⭐R96gav 应用层活性打点（join 本身算一条插件 JS 消息）
+        log(`[lf-agent] 插件已连入（${joinerId || "未知ID"}），发送 broker.hello`);
         this.send({
           type: "broker.hello",
           protocolVersion: PROTOCOL_VERSION,
           serverName: "LeadsRadar Agent Adapter",
           // ⭐r76 devices 聚合：本机设备 + 所有挂着的卫星适配器（插件对每个已配对设备独立验签建会话）
-          devices: [DEVICE, ...[...this.downstreams.values()].map((d) => d.device)]
+          devices: [DEVICE, ...[...this.downstreams.values()].map((d) => d.device)],
         });
         return;
       }
+
+      this.lastPluginMsgAt = Date.now(); // ⭐R96gav 应用层活性打点：任何已 join 消息都证明插件 JS 活着
       switch (msg.type) {
+
         case "extension.ping":
           this.send({ type: "broker.pong", at: msg.at });
           return;
+
         case "session.challenge": {
+          // ⭐r76 挑战目标是卫星设备时转发给它签（卫星持有自己的私钥），本机只做透明路由
           const ds = this.downstreams.get(String((msg.challenge || {}).deviceId || ""));
           if (ds) {
-            try {
-              ds.ws.send(JSON.stringify({ type: "device.challenge", challenge: msg.challenge }));
-            } catch {
-            }
+            try { ds.ws.send(JSON.stringify({ type: "device.challenge", challenge: msg.challenge })); } catch { /* noop */ }
             return;
           }
+          // 签名 payload 与插件逐字段一致（顺序/换行不可动）
           const c = msg.challenge || {};
           const payload = [
             "mediaclaw-agent",
@@ -4153,35 +654,35 @@ var AgentBroker = class {
             String(c.challengeId ?? ""),
             String(c.nonce ?? ""),
             String(c.extensionId ?? ""),
-            String(c.protocolVersion ?? PROTOCOL_VERSION)
+            String(c.protocolVersion ?? PROTOCOL_VERSION),
           ].join("\n");
           this.send({
             type: "session.proof",
             purpose: c.purpose,
             deviceId: c.deviceId,
             challengeId: c.challengeId,
-            signature: signPayload(payload)
+            signature: signPayload(payload),
           });
           return;
         }
+
         case "pairing.awaiting_approval": {
+          // ⭐r76 待批准的是卫星设备时转发提示（卫星侧打指纹日志引导用户批准）
           const dsPairing = this.downstreams.get(String(msg.deviceId || ""));
           if (dsPairing) {
-            try {
-              dsPairing.ws.send(JSON.stringify({ type: "device.pairing.awaiting_approval", deviceId: msg.deviceId }));
-            } catch {
-            }
+            try { dsPairing.ws.send(JSON.stringify({ type: "device.pairing.awaiting_approval", deviceId: msg.deviceId })); } catch { /* noop */ }
             return;
           }
           if (!this.awaitingPairing) {
             this.awaitingPairing = true;
             this.awaitingSince = Date.now();
-            log(`[lf-agent] \u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF08\u8BBE\u7F6E\u9875 \u2192 \u667A\u80FD\u4F53\u8FDE\u63A5 \u2192 \u5F85\u6279\u51C6\u8BBE\u5907\u300C${DEVICE_NAME}\u300D\uFF09`);
-            log(`[lf-agent] \u6307\u7EB9\u6838\u5BF9\uFF1A${fingerprint}`);
+            log(`[lf-agent] 等待用户批准配对（设置页 → 智能体连接 → 待批准设备「${DEVICE_NAME}」）`);
+            log(`[lf-agent] 指纹核对：${fingerprint}`);
           }
           pokeHandshake();
           return;
         }
+
         case "extension.hello": {
           sessionReady = true;
           if (pokeTimer) clearTimeout(pokeTimer);
@@ -4197,90 +698,92 @@ var AgentBroker = class {
             pendingResults: Array.isArray(msg.pendingResults) ? msg.pendingResults.slice(0, 10) : [],
             // ⭐r81 P0-3 登录态随握手上报（宿主 connection_status 可见，需登录的动作可动手前预检）；
             // 旧 hello 无此字段时保留上次值（防重握手瞬间丢登录态）
-            account: msg.account ? { loggedIn: msg.account.loggedIn === true, nickname: String(msg.account.nickname || "") || null } : this.extension.account || null
+            account: msg.account
+              ? pickAccountSnapshot(msg.account)
+              : this.extension.account || null,
           };
-          log(`[lf-agent] \u5DF2\u8FDE\u63A5\u63D2\u4EF6 ${this.extension.extensionId} v${this.extension.extensionVersion}`);
+          log(`[lf-agent] 已连接插件 ${this.extension.extensionId} v${this.extension.extensionVersion}`);
+          // ⭐r76 插件上线同步通知卫星们（它们的 statusSnapshot 依赖此状态）
           this.notifyDownstreamsExtension(true);
           return;
         }
+
         case "extension.account.update": {
+          // ⭐1.2.16 B9 登录态保鲜：登录/登出/解绑实时同步（插件 storage 变化即推）——
+          // 旧版只在握手带一次 account，解绑后 connection_status 冻结显示「已登录」（用户实报）
           if (msg.account) {
             this.extension = {
               ...this.extension,
-              account: {
-                loggedIn: msg.account.loggedIn === true,
-                nickname: String(msg.account.nickname || "") || null
-              }
+              account: pickAccountSnapshot(msg.account),
             };
-            log(`[lf-agent] \u767B\u5F55\u6001\u66F4\u65B0\uFF1A${msg.account.loggedIn === true ? `\u5DF2\u767B\u5F55\uFF08${msg.account.nickname || "?"}\uFF09` : "\u672A\u767B\u5F55"}`);
+            log(`[lf-agent] 登录态更新：${msg.account.loggedIn === true ? `已登录（${msg.account.nickname || "?"}）` : "未登录"}`);
+            // ⭐R56 登录态变化实时转发卫星（幂等重推 connected/pendingResults 无副作用）
             this.notifyDownstreamsExtension(this.extension.connected);
           }
           return;
         }
+
         case "task.progress": {
           const p = msg.progress || {};
+          // ⭐r76 卫星设备的任务进度转发（本地不记 waiter）
           const dsProgress = this.downstreams.get(String(msg.deviceId || ""));
           if (dsProgress) {
-            try {
-              dsProgress.ws.send(JSON.stringify({ type: "device.task.progress", taskId: msg.taskId, progress: msg.progress }));
-            } catch {
-            }
+            try { dsProgress.ws.send(JSON.stringify({ type: "device.task.progress", taskId: msg.taskId, progress: msg.progress })); } catch { /* noop */ }
             return;
           }
+          // ⭐R96gcj 队列忙即时回执：queued 进度立即 resolve，宿主不再干等超时
+          if (this.resolveIfQueued(String(msg.taskId), p)) return;
           this.lastProgress.set(String(msg.taskId), p);
-          log(`[lf-agent] \u8FDB\u5EA6 ${msg.taskId} ${p.status ?? ""}${p.stage ? "/" + p.stage : ""} ${p.message ?? ""}` + (p.processedCount != null ? ` (${p.processedCount}/${p.totalCount ?? "?"})` : ""));
+          log(`[lf-agent] 进度 ${msg.taskId} ${p.status ?? ""}${p.stage ? "/" + p.stage : ""} ${p.message ?? ""}` +
+            (p.processedCount != null ? ` (${p.processedCount}/${p.totalCount ?? "?"})` : ""));
           return;
         }
+
         case "task.result": {
-          this.send({ type: "task.result.ack", taskId: msg.taskId, deviceId: msg.deviceId });
+          // ⭐R96gcj 无 waiter 不回 ack：宿主已收 queued 回执提前离开/超时离开后，结果保持
+          //   未领取态留在插件 pendingResults——claim_pending_result 可领（旧行为无条件回 ack
+          //   →插件标已领取→晚到结果成死数据，R96at 曾为此打晚到回灌补丁）
           const dsResult = this.downstreams.get(String(msg.deviceId || ""));
           if (dsResult) {
-            try {
-              dsResult.ws.send(JSON.stringify({ type: "device.task.result", taskId: msg.taskId, response: msg.response }));
-            } catch {
-            }
+            try { dsResult.ws.send(JSON.stringify({ type: "device.task.result", taskId: msg.taskId, response: msg.response })); } catch { /* noop */ }
             return;
           }
-          this.finishTask(String(msg.taskId), msg.response);
+          if (this.finishTask(String(msg.taskId), msg.response)) {
+            this.send({ type: "task.result.ack", taskId: msg.taskId, deviceId: msg.deviceId });
+          }
           return;
         }
+
         case "task.result.start": {
           const dsStart = this.downstreams.get(String(msg.deviceId || ""));
           if (dsStart) {
-            try {
-              dsStart.ws.send(JSON.stringify({ type: "device.task.result.start", transferId: msg.transferId, taskId: msg.taskId, charLength: msg.charLength }));
-            } catch {
-            }
+            try { dsStart.ws.send(JSON.stringify({ type: "device.task.result.start", transferId: msg.transferId, taskId: msg.taskId, charLength: msg.charLength })); } catch { /* noop */ }
             return;
           }
           this.transfers.set(String(msg.transferId), {
             taskId: String(msg.taskId),
             charLength: Number(msg.charLength) || 0,
-            chunks: /* @__PURE__ */ new Map()
+            chunks: new Map(),
           });
           return;
         }
+
         case "task.result.chunk": {
           const dsChunk = this.downstreams.get(String(msg.deviceId || ""));
           if (dsChunk) {
-            try {
-              dsChunk.ws.send(JSON.stringify({ type: "device.task.result.chunk", transferId: msg.transferId, index: msg.index, data: msg.data }));
-            } catch {
-            }
+            try { dsChunk.ws.send(JSON.stringify({ type: "device.task.result.chunk", transferId: msg.transferId, index: msg.index, data: msg.data })); } catch { /* noop */ }
             return;
           }
           const bucket = this.transfers.get(String(msg.transferId));
           if (bucket) bucket.chunks.set(Number(msg.index), String(msg.data ?? ""));
           return;
         }
+
         case "task.result.end": {
-          this.send({ type: "task.result.ack", taskId: msg.taskId, deviceId: msg.deviceId });
+          // ⭐r76 卫星设备的大结果分块重组转发（end 时代回 ack）
           const dsEnd = this.downstreams.get(String(msg.deviceId || ""));
           if (dsEnd) {
-            try {
-              dsEnd.ws.send(JSON.stringify({ type: "device.task.result.end", transferId: msg.transferId, taskId: msg.taskId, chunkCount: msg.chunkCount }));
-            } catch {
-            }
+            try { dsEnd.ws.send(JSON.stringify({ type: "device.task.result.end", transferId: msg.transferId, taskId: msg.taskId, chunkCount: msg.chunkCount })); } catch { /* noop */ }
             return;
           }
           const bucket = this.transfers.get(String(msg.transferId));
@@ -4291,40 +794,45 @@ var AgentBroker = class {
           for (let i = 0; i < count; i += 1) serialized += bucket.chunks.get(i) ?? "";
           try {
             const parsed = JSON.parse(serialized);
-            this.finishTask(String(msg.taskId), parsed.response);
+            // ⭐R96gcj 大结果同款「无 waiter 不回 ack」（与 task.result 分支同口径，结果可 claim）
+            if (this.finishTask(String(msg.taskId), parsed.response)) {
+              this.send({ type: "task.result.ack", taskId: msg.taskId, deviceId: msg.deviceId });
+            }
           } catch (err) {
             this.finishTask(String(msg.taskId), {
               ok: false,
-              error: { code: "RESULT_PARSE_ERROR", message: `\u7ED3\u679C\u5206\u5757\u91CD\u7EC4\u5931\u8D25\uFF1A${err.message}` }
+              error: { code: "RESULT_PARSE_ERROR", message: `结果分块重组失败：${err.message}` },
             });
           }
           return;
         }
+
         case "task.cancel.result":
+          // ⭐r76 卫星设备发起的取消之回执：转发回卫星
           {
             const dsCancel = this.downstreams.get(String(msg.deviceId || ""));
             if (dsCancel) {
-              try {
-                dsCancel.ws.send(JSON.stringify({ type: "device.task.cancel.result", taskId: msg.taskId, response: msg.response }));
-              } catch {
-              }
+              try { dsCancel.ws.send(JSON.stringify({ type: "device.task.cancel.result", taskId: msg.taskId, response: msg.response })); } catch { /* noop */ }
               return;
             }
           }
           this.finishTask(String(msg.taskId), msg.response || { ok: false, canceled: true });
           return;
+
         default:
           return;
       }
     });
+
     ws.on("close", (code, reasonBuf) => {
       if (pokeTimer) clearTimeout(pokeTimer);
       clearInterval(pingTimer);
+      // ⭐r76 卫星连接断开：摘牌 + 广播 devices 变化 + 通知插件该设备离线
       if (ws.__lfDownstreamId) {
         const goneId = ws.__lfDownstreamId;
         if (this.downstreams.get(goneId)?.ws === ws) {
           this.downstreams.delete(goneId);
-          log(`[lf-agent] \u536B\u661F\u9002\u914D\u5668 ${goneId} \u65AD\u5F00\u4E2D\u8F6C`);
+          log(`[lf-agent] 卫星适配器 ${goneId} 断开中转`);
           this.broadcastDevices();
           this.send({ type: "device.offline", deviceId: goneId });
         }
@@ -4333,37 +841,42 @@ var AgentBroker = class {
       if (this.client === ws) {
         this.client = null;
         this.clientExtensionId = null;
+        // ⭐1.2.17 B3：close frame 细节不再丢弃（reason 是 Buffer），断开诊断的数据源
         const closeReason = String(reasonBuf?.toString?.("utf8") || "");
-        this.lastClose = { code: Number(code) || 0, reason: closeReason, at: (/* @__PURE__ */ new Date()).toISOString() };
+        this.lastClose = { code: Number(code) || 0, reason: closeReason, at: new Date().toISOString() };
         if (this.extension.connected) {
           this.extension = { ...this.extension, connected: false };
-          this.lastDisconnect = (/* @__PURE__ */ new Date()).toISOString();
-          log(`[lf-agent] \u63D2\u4EF6\u65AD\u5F00\uFF08close code=${code}${closeReason ? ` reason="${closeReason}"` : ""}\uFF1B\u7B49\u63D2\u4EF6\u81EA\u52A8\u91CD\u8FDE\uFF1B\u82E5\u957F\u65F6\u95F4\u672A\u6062\u590D\uFF0C\u68C0\u67E5\u63D2\u4EF6\u5F00\u5173/\u91CD\u8F7D\u63D2\u4EF6\uFF09`);
+          this.lastDisconnect = new Date().toISOString();
+          log(`[lf-agent] 插件断开（close code=${code}${closeReason ? ` reason="${closeReason}"` : ""}；等插件自动重连；若长时间未恢复，检查插件开关/重载插件）`);
+          // ⭐1.2.16 B7：插件断开即中止所有等待中的任务（浏览器被关时任务秒级失败，不再傻等 TASK_TIMEOUT）
           this.abortPendingTasks();
+          // ⭐r76 插件掉线同步通知卫星们（卫星的 statusSnapshot 依赖此状态）；⭐1.2.17 B3 顺带同步断开诊断
           this.notifyDownstreamsExtension(false, this.lastClose);
         }
+        /* ⭐411 断开即复位等待批准标志：旧版残留 true 会把 status 卡在 step=2 误导 AI 和用户
+           （用户实报「AI 说等待批准，插件里却没有待批准设备」）。没连接就诚实地回到 step=1。 */
         if (this.awaitingPairing) {
           this.awaitingPairing = false;
-          log("[lf-agent] \u5DF2\u590D\u4F4D\u7B49\u5F85\u6279\u51C6\u72B6\u6001\uFF08\u63D2\u4EF6\u91CD\u8FDE\u540E\u6309\u5DF2\u6279\u51C6/\u5F85\u6279\u51C6\u8DEF\u5F84\u91CD\u65B0\u63E1\u624B\uFF09");
+          log("[lf-agent] 已复位等待批准状态（插件重连后按已批准/待批准路径重新握手）");
         }
       }
     });
   }
+
   /* ================= ⭐r76 多宿主中转：主 Broker 侧 ================= */
+
   /** 卫星挂入/摘牌后向插件重发 broker.hello（devices 聚合），插件会自动对新设备发起挑战验签、对消失设备清会话 */
   broadcastDevices() {
     if (!this.client || this.client.readyState !== this.client.OPEN) return;
     const devices = [DEVICE, ...[...this.downstreams.values()].map((d) => d.device)];
     this.send({ type: "broker.hello", protocolVersion: PROTOCOL_VERSION, serverName: "LeadsRadar Agent Adapter", devices });
   }
+
   /** 插件在线状态变化时通知所有卫星（卫星据此维护自己的 extension.connected / step）；⭐1.2.17 B3：断开时顺带透传 close frame 诊断；
    *  ⭐R56 登录态随状态透传卫星（WorkBuddy 中转实测 loggedIn 恒 null——卫星侧 connection_status 只能兜底，存选题预检失效） */
   notifyDownstreamsExtension(connected, lastClose = null) {
     for (const entry of this.downstreams.values()) {
-      try {
-        entry.ws.send(JSON.stringify({ type: "device.extension.state", connected: connected === true, lastClose: lastClose ? { code: lastClose.code, reason: lastClose.reason } : null, pendingResults: (this.extension.pendingResults || []).slice(0, 10), account: this.extension.account || null }));
-      } catch {
-      }
+      try { entry.ws.send(JSON.stringify({ type: "device.extension.state", connected: connected === true, lastClose: lastClose ? { code: lastClose.code, reason: lastClose.reason } : null, pendingResults: (this.extension.pendingResults || []).slice(0, 10), account: this.extension.account || null })); } catch { /* noop */ }
     }
   }
   /** 卫星连接发来的消息路由（device.task.start / device.proof / device.task.cancel） */
@@ -4374,32 +887,38 @@ var AgentBroker = class {
     switch (msg.type) {
       case "device.task.start":
         if (!this.client || this.client.readyState !== this.client.OPEN) {
-          try {
-            ws.send(JSON.stringify({ type: "device.task.result", taskId: msg.taskId, response: { ok: false, error: { code: "EXTENSION_NOT_CONNECTED", message: "\u63D2\u4EF6\u5F53\u524D\u672A\u8FDE\u63A5\u4E3B Broker\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5" } } }));
-          } catch {
-          }
+          try { ws.send(JSON.stringify({ type: "device.task.result", taskId: msg.taskId, response: { ok: false, error: { code: "EXTENSION_NOT_CONNECTED", message: "插件当前未连接主 Broker，请稍后重试" } } })); } catch { /* noop */ }
           return;
         }
         this.send({ type: "task.start", taskId: String(msg.taskId || ""), deviceId, task: msg.task });
-        log(`[lf-agent] \u4E2D\u8F6C\u4E0B\u53D1\u4EFB\u52A1 ${msg.taskId}\uFF08\u6765\u81EA\u536B\u661F ${deviceId}\uFF09`);
+        log(`[lf-agent] 中转下发任务 ${msg.taskId}（来自卫星 ${deviceId}）`);
+        return;
+      // ⭐R96g1bc 中转通道活性探针应答：卫星 frozen 候选时发 device.ping 鉴别「中继半死 vs 插件真冻」
+      //   （261104 定谙：workbuddy 卫星与主 Broker 的 TCP 半死——ws.send 写进死连接蒸发不报错，
+      //   插件零踪迹零回执，mjs 侧误诊 PLUGIN_FROZEN 冤枉插件；探针秒回 pong=通道活，2.5s 无回=半死）
+      case "device.ping":
+        try { ws.send(JSON.stringify({ type: "device.pong" })); } catch { /* noop */ }
         return;
       case "device.task.cancel":
         this.send({ type: "task.cancel", taskId: String(msg.taskId || ""), deviceId });
         return;
       case "device.proof":
+        // 卫星签好的挑战回执 → 转成插件期望的 session.proof
         this.send({
           type: "session.proof",
           purpose: msg.purpose,
           deviceId,
           challengeId: msg.challengeId,
-          signature: msg.signature
+          signature: msg.signature,
         });
         return;
       default:
         return;
     }
   }
+
   /* ================= ⭐r76 多宿主中转：卫星侧 ================= */
+
   /**
    * EADDRINUSE 时探测占用者身份：连上端口等它 poke 的 device.hello。
    * - 占用者是本宿主旧实例（孤儿）→ takeover 让位（保留 ⭐412 自愈语义）
@@ -4410,7 +929,7 @@ var AgentBroker = class {
     return new Promise((resolve) => {
       let probe;
       try {
-        probe = new import_websocket.default(`ws://127.0.0.1:${PORT}/extension`);
+        probe = new WebSocket(`ws://127.0.0.1:${PORT}/extension`);
       } catch {
         resolve("error");
         return;
@@ -4421,77 +940,58 @@ var AgentBroker = class {
         settled = true;
         clearTimeout(kill);
         if (verdict === "other") {
-          this.enterRelayMode(probe);
+          this.enterRelayMode(probe); // 复用这条连接挂为卫星
         } else {
+          // self / timeout / unknown / closed：孤儿或旧版——礼貌接管（旧语义兜底）
           try {
             probe.send(JSON.stringify({ type: "broker.takeover", fromDeviceId: DEVICE_ID }));
-            setTimeout(() => {
-              try {
-                probe.close(1e3);
-              } catch {
-              }
-            }, 300);
-          } catch {
-          }
+            setTimeout(() => { try { probe.close(1000); } catch { /* noop */ } }, 300);
+          } catch { /* noop */ }
           if (verdict !== "self") fallbackTakeover?.();
         }
         resolve(verdict);
       };
-      const kill = setTimeout(() => {
-        try {
-          probe.terminate();
-        } catch {
-        }
-        finish("timeout");
-      }, 2500);
+      const kill = setTimeout(() => { try { probe.terminate(); } catch { /* noop */ } finish("timeout"); }, 2500);
       probe.on("message", (raw) => {
         let msg;
-        try {
-          msg = JSON.parse(raw.toString());
-        } catch {
-          return;
-        }
+        try { msg = JSON.parse(raw.toString()); } catch { return; }
         if (msg.type !== "device.hello") return;
         const occ = String(msg.device?.deviceId || "");
         if (occ === DEVICE_ID) finish("self");
         else if (occ.startsWith("leadsradar-agent-")) finish("other");
         else finish("unknown");
       });
-      probe.on("open", () => {
-      });
+      probe.on("open", () => { /* 等 poke 的 device.hello */ });
       probe.on("error", () => finish("timeout"));
       probe.on("close", () => finish("closed"));
     });
   }
+
   /** 以卫星身份挂到主 Broker：共享其插件连接，任务经中转双向路由 */
   enterRelayMode(ws) {
     this.relay = { ws, host: "", hostLabel: "", extensionConnected: false };
     this.portBound = false;
     this.awaitingPairing = false;
-    log(`[lf-agent] \u7AEF\u53E3 ${PORT} \u88AB\u300C\u53E6\u4E00\u5BBF\u4E3B\u300D\u7684\u9002\u914D\u5668\u5360\u7528 \u2192 \u8FDB\u5165\u536B\u661F\u4E2D\u8F6C\u6A21\u5F0F\uFF08\u591A\u5BBF\u4E3B\u5171\u5B58\uFF0C\u4E0D\u518D\u4E92\u8E22\uFF09`);
+    log(`[lf-agent] 端口 ${PORT} 被「另一宿主」的适配器占用 → 进入卫星中转模式（多宿主共存，不再互踢）`);
     try {
       ws.send(JSON.stringify({ type: "device.attach", deviceId: DEVICE_ID, device: DEVICE, protocolVersion: PROTOCOL_VERSION }));
     } catch {
       this.exitRelayMode();
       return;
     }
+    // attach.ok 超时守卫：主 Broker 若是旧版本（不认识 device.attach）→ 降级回接管语义
     const attachGuard = setTimeout(() => {
       if (this.relay && this.relay.ws === ws && !this.relay.attached) {
-        log("[lf-agent] \u4E3B Broker \u672A\u5E94\u7B54 device.attach\uFF08\u7591\u4F3C\u65E7\u7248\u672C\uFF09\u2192 \u964D\u7EA7\u4E3A\u63A5\u7BA1\u6A21\u5F0F");
+        log("[lf-agent] 主 Broker 未应答 device.attach（疑似旧版本）→ 降级为接管模式");
         try {
           ws.send(JSON.stringify({ type: "broker.takeover", fromDeviceId: DEVICE_ID }));
-        } catch {
-        }
+        } catch { /* noop */ }
         this.exitRelayMode();
       }
-    }, 3e3);
+    }, 3000);
     ws.on("message", (raw) => {
       let msg;
-      try {
-        msg = JSON.parse(raw.toString());
-      } catch {
-        return;
-      }
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
       if (msg.type === "device.attach.ok") {
         clearTimeout(attachGuard);
         if (!this.relay || this.relay.ws !== ws) return;
@@ -4499,72 +999,106 @@ var AgentBroker = class {
         this.relay.host = String(msg.host || "");
         this.relay.hostLabel = String(msg.hostLabel || "");
         this.relay.extensionConnected = msg.extension?.connected === true;
-        log(`[lf-agent] \u5DF2\u6302\u4E0A\u4E3B Broker\uFF08${this.relay.hostLabel || this.relay.host}\uFF09\uFF1A\u63D2\u4EF6${this.relay.extensionConnected ? "\u5728\u7EBF" : "\u672A\u8FDE\u63A5"}\uFF0C\u672C\u8BBE\u5907\u7ECF\u4E2D\u8F6C\u5BF9\u63D2\u4EF6\u53EF\u89C1`);
+        log(`[lf-agent] 已挂上主 Broker（${this.relay.hostLabel || this.relay.host}）：插件${this.relay.extensionConnected ? "在线" : "未连接"}，本设备经中转对插件可见`);
         return;
       }
       this.handleRelayMessage(msg);
     });
-    ws.on("close", () => {
-      if (this.relay?.ws === ws) this.exitRelayMode();
-    });
-    ws.on("error", () => {
-    });
+    ws.on("close", () => { if (this.relay?.ws === ws) this.exitRelayMode(); });
+    ws.on("error", () => { /* close 会跟着触发 */ });
   }
+
   /** 卫星中转断开：回到端口竞争（主 Broker 若已退出，3 秒内自动接管成为新主） */
   exitRelayMode() {
     if (!this.relay) return;
-    try {
-      this.relay.ws.terminate();
-    } catch {
-    }
+    try { this.relay.ws.terminate(); } catch { /* noop */ }
     this.relay = null;
-    log("[lf-agent] \u4E0E\u4E3B Broker \u7684\u4E2D\u8F6C\u8FDE\u63A5\u65AD\u5F00 \u2192 \u91CD\u65B0\u7ADE\u4E89\u7AEF\u53E3\uFF08\u82E5\u5BF9\u65B9\u5DF2\u9000\u51FA\u4F1A\u81EA\u52A8\u6210\u4E3A\u4E3B Broker\uFF09");
+    log("[lf-agent] 与主 Broker 的中转连接断开 → 重新竞争端口（若对方已退出会自动成为主 Broker）");
     this.retryBindAfterRelayLoss?.();
   }
+
+  /** ⭐R96g1bc 中转通道活性探针：向主 Broker 发 device.ping 等 pong——waitMs 内无回包=中继半死
+   *  （宿主睡眠恢复/网络切换后 TCP 半开：ws.send 写进死连接蒸发不报错、close 永不触发，mjs 零感知，
+   *  任务零回执被误诊 PLUGIN_FROZEN 冤枉插件；261104 直连实验坐实：同插件同任务直连 5.5s 回包，
+   *  卫星中转零踪迹）。pong 秒回=通道活着，冻结嫌疑回到插件本身 */
+  probeRelayAlive(waitMs) {
+    return new Promise((resolve) => {
+      const relay = this.relay;
+      if (!relay || !relay.attached || relay.ws.readyState !== 1 /* OPEN */) { resolve(false); return; }
+      let settled = false;
+      const done = (ok) => {
+        if (settled) return;
+        settled = true;
+        this._relayPongWaiter = null;
+        resolve(ok);
+      };
+      this._relayPongWaiter = () => done(true);
+      try {
+        relay.ws.send(JSON.stringify({ type: "device.ping", ts: Date.now() }));
+      } catch {
+        done(false);
+        return;
+      }
+      setTimeout(() => done(false), waitMs);
+    });
+  }
+
   /** 主 Broker 发给卫星的消息处理（挑战签名 / 任务结果 / 插件状态） */
   handleRelayMessage(msg) {
     const relay = this.relay;
     if (!relay) return;
     switch (msg.type) {
+      // ⭐R96g1bc 中转活性探针回执：唤醒等待者（probeRelayAlive 的 2.5s 窗内到达=通道活）
+      case "device.pong":
+        this._relayPongWaiter?.();
+        return;
       case "device.extension.state":
         relay.extensionConnected = msg.connected === true;
+        // ⭐B7b-P1 卫星同步未领取结果摘要（主 Broker 透传）：卫星 connection_status 也能展示存货引导 claim
         if (Array.isArray(msg.pendingResults)) {
           this.extension = { ...this.extension, pendingResults: msg.pendingResults.slice(0, 10), pendingResultCount: msg.pendingResults.length };
         }
+        // ⭐R56 登录态随中转状态到达（对齐 extension.hello 消费范式；旧主 Broker 不带此字段=保留上次值防清丢）
         if (msg.account) {
-          this.extension = { ...this.extension, account: { loggedIn: msg.account.loggedIn === true, nickname: String(msg.account.nickname || "") || null } };
+          this.extension = { ...this.extension, account: pickAccountSnapshot(msg.account) };
         }
         if (msg.connected === true && this.awaitingPairing) {
+          // 插件握手完成（含本设备批准后的重握手）→ 复位等待批准标志（对齐主模式 extension.hello 语义）
           this.awaitingPairing = false;
-          log("[lf-agent] \u536B\u661F\u6A21\u5F0F\u5DF2\u590D\u4F4D\u7B49\u5F85\u6279\u51C6\u72B6\u6001");
+          log("[lf-agent] 卫星模式已复位等待批准状态");
         }
         if (this.extension.connected !== relay.extensionConnected) {
           this.extension = { ...this.extension, connected: relay.extensionConnected };
           if (!relay.extensionConnected) {
-            this.lastDisconnect = (/* @__PURE__ */ new Date()).toISOString();
-            if (relay.lastClose) this.lastClose = { code: relay.lastClose.code || 0, reason: relay.lastClose.reason || "", at: (/* @__PURE__ */ new Date()).toISOString() };
+            this.lastDisconnect = new Date().toISOString();
+            // ⭐1.2.17 B3：收下主 Broker 透传的断开诊断（插件 close 的 code+reason 原文）
+            if (relay.lastClose) this.lastClose = { code: relay.lastClose.code || 0, reason: relay.lastClose.reason || "", at: new Date().toISOString() };
+            // ⭐1.2.16 B7：中转通道通知插件掉线 → 同样秒级中止本卫星等待中的任务
             this.abortPendingTasks();
           }
-          log(`[lf-agent] \u4E2D\u8F6C\u901A\u77E5\uFF1A\u63D2\u4EF6${relay.extensionConnected ? "\u5DF2\u8FDE\u63A5" : "\u5DF2\u65AD\u5F00"}`);
+          log(`[lf-agent] 中转通知：插件${relay.extensionConnected ? "已连接" : "已断开"}`);
         }
         return;
       case "device.pairing.awaiting_approval":
         if (!this.awaitingPairing) {
           this.awaitingPairing = true;
           this.awaitingSince = Date.now();
-          log(`[lf-agent] \u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF08\u536B\u661F\u6A21\u5F0F\uFF0C\u7ECF\u4E3B Broker \u4E2D\u8F6C\uFF09`);
-          log(`[lf-agent] \u6307\u7EB9\u6838\u5BF9\uFF1A${fingerprint}`);
+          log(`[lf-agent] 等待用户批准配对（卫星模式，经主 Broker 中转）`);
+          log(`[lf-agent] 指纹核对：${fingerprint}`);
         }
         return;
       case "device.challenge": {
+        this.lastPluginMsgAt = Date.now(); // ⭐R96gp 卫星活性打点：挑战由插件 JS 发起经主 Broker 转发，收到即证明插件活着
+        // ⭐r96ze 挑战类型=自身配对态真值：session=已配对（含批准后重握手），pairing=未配对（含被吊销后回退）
         const purposeNow = String((msg.challenge || {}).purpose ?? "");
         if (purposeNow === "session" && !this.selfPaired) {
           this.selfPaired = true;
-          log("[lf-agent] \u536B\u661F\u6A21\u5F0F\uFF1A\u6536\u5230 session \u6311\u6218\uFF08\u63D2\u4EF6\u5DF2\u8BA4\u672C\u8BBE\u5907\u4E3A\u5DF2\u914D\u5BF9\uFF09");
+          log("[lf-agent] 卫星模式：收到 session 挑战（插件已认本设备为已配对）");
         } else if (purposeNow === "pairing" && this.selfPaired) {
           this.selfPaired = false;
-          log("[lf-agent] \u536B\u661F\u6A21\u5F0F\uFF1A\u6536\u5230 pairing \u6311\u6218\uFF08\u672C\u8BBE\u5907\u914D\u5BF9\u5DF2\u5931\u6548\uFF0C\u56DE\u5230\u5F85\u6279\u51C6\uFF09");
+          log("[lf-agent] 卫星模式：收到 pairing 挑战（本设备配对已失效，回到待批准）");
         }
+        // 与主模式同一套签名（payload 字段与插件逐字一致）
         const c = msg.challenge || {};
         const payload = [
           "mediaclaw-agent",
@@ -4573,7 +1107,7 @@ var AgentBroker = class {
           String(c.challengeId ?? ""),
           String(c.nonce ?? ""),
           String(c.extensionId ?? ""),
-          String(c.protocolVersion ?? PROTOCOL_VERSION)
+          String(c.protocolVersion ?? PROTOCOL_VERSION),
         ].join("\n");
         try {
           relay.ws.send(JSON.stringify({
@@ -4581,34 +1115,41 @@ var AgentBroker = class {
             purpose: c.purpose,
             deviceId: c.deviceId,
             challengeId: c.challengeId,
-            signature: signPayload(payload)
+            signature: signPayload(payload),
           }));
-        } catch {
-        }
+        } catch { /* noop */ }
         return;
       }
       case "device.task.progress": {
+        this.lastPluginMsgAt = Date.now(); // ⭐R96gp 卫星活性打点：任务进度源自插件 JS，经主 Broker 转发
         const p = msg.progress || {};
+        // ⭐R96gcj 卫星发起任务同享队列忙即时回执（queued 进度立即 resolve）
+        if (this.resolveIfQueued(String(msg.taskId), p)) return;
         this.lastProgress.set(String(msg.taskId), p);
-        log(`[lf-agent] \u8FDB\u5EA6\uFF08\u4E2D\u8F6C\uFF09${msg.taskId} ${p.status ?? ""}${p.stage ? "/" + p.stage : ""} ${p.message ?? ""}` + (p.processedCount != null ? ` (${p.processedCount}/${p.totalCount ?? "?"})` : ""));
+        log(`[lf-agent] 进度（中转）${msg.taskId} ${p.status ?? ""}${p.stage ? "/" + p.stage : ""} ${p.message ?? ""}` +
+          (p.processedCount != null ? ` (${p.processedCount}/${p.totalCount ?? "?"})` : ""));
         return;
       }
       case "device.task.result":
+        this.lastPluginMsgAt = Date.now(); // ⭐R96gp 卫星活性打点
         this.finishTask(String(msg.taskId), msg.response);
         return;
       case "device.task.result.start":
+        this.lastPluginMsgAt = Date.now(); // ⭐R96gp 卫星活性打点（大结果分块）
         this.transfers.set(String(msg.transferId), {
           taskId: String(msg.taskId),
           charLength: Number(msg.charLength) || 0,
-          chunks: /* @__PURE__ */ new Map()
+          chunks: new Map(),
         });
         return;
       case "device.task.result.chunk": {
+        this.lastPluginMsgAt = Date.now(); // ⭐R96gp 卫星活性打点（大结果分块）
         const bucket = this.transfers.get(String(msg.transferId));
         if (bucket) bucket.chunks.set(Number(msg.index), String(msg.data ?? ""));
         return;
       }
       case "device.task.result.end": {
+        this.lastPluginMsgAt = Date.now(); // ⭐R96gp 卫星活性打点（大结果分块）
         const bucket = this.transfers.get(String(msg.transferId));
         this.transfers.delete(String(msg.transferId));
         if (!bucket) return;
@@ -4621,7 +1162,7 @@ var AgentBroker = class {
         } catch (err) {
           this.finishTask(String(msg.taskId), {
             ok: false,
-            error: { code: "RESULT_PARSE_ERROR", message: `\u7ED3\u679C\u5206\u5757\u91CD\u7EC4\u5931\u8D25\uFF1A${err.message}` }
+            error: { code: "RESULT_PARSE_ERROR", message: `结果分块重组失败：${err.message}` },
           });
         }
         return;
@@ -4633,15 +1174,38 @@ var AgentBroker = class {
         return;
     }
   }
+
   finishTask(taskId, response) {
     const waiter = this.taskWaiters.get(taskId);
-    if (!waiter) return;
+    if (!waiter) return false;
     this.taskWaiters.delete(taskId);
     this.lastProgress.delete(taskId);
     clearTimeout(waiter.timer);
     waiter.response = response;
     waiter.resolve(response);
+    return true;
   }
+
+  /** ⭐R96gcj 队列忙即时回执（用户实报「搞了半天告诉我没有数据，需要等这么久吗」）：
+   *  插件任务通道是全局串行队列，前序任务（深扫/采集）占队期间新任务只有一条 queued
+   *  progress 然后沉默——mjs 侧干等到超时才报「任务超时」，用户读作失败+没数据。
+   *  改为收到 queued progress 立即 resolve 排队回执（位次+领取路径），宿主秒级拿到
+   *  明确交代；任务照跑，完成结果留在插件 pendingResults（角标/claim 可领，不丢）。 */
+  resolveIfQueued(taskId, p) {
+    if (!p || p.status !== "queued") return false;
+    const waiter = this.taskWaiters.get(String(taskId));
+    if (!waiter) return false;
+    this.taskWaiters.delete(String(taskId));
+    this.lastProgress.delete(String(taskId));
+    clearTimeout(waiter.timer);
+    waiter.resolve({
+      ok: true,
+      queued: true,
+      message: `${String(p.message || "插件正在执行其他任务，你的任务已排队")}——前序任务完成后自动开始，采集数据会先落探栗本地库。不要重发任务（避免重复消耗采集额度）；稍等 1~2 分钟后用 leadsradar_claim_pending_result 领取结果，或 leadsradar_query_local_data 直接查本地库。`,
+    });
+    return true;
+  }
+
   /** ⭐1.2.17 B3 断开原因诊断：按插件断开的 close frame（code+reason）给精准指引。
    *  返回非空字符串=有诊断（调用方以此为首选指引，跳过 start chrome 类无效指引）；null=无可用诊断（回落旧文案）。
    *  reason 真源在插件 local-agent-connector.ts：stop() 关开关 → "LF Agent disabled"；
@@ -4650,118 +1214,199 @@ var AgentBroker = class {
   disconnectDiagnosis() {
     const c = this.lastClose;
     if (!c) return null;
-    if (Date.now() - new Date(c.at).getTime() > 10 * 60 * 1e3) return null;
+    if (Date.now() - new Date(c.at).getTime() > 10 * 60 * 1000) return null; // 陈旧记录不作数（10 分钟外的断开原因与当下无关）
     if (c.reason.includes("disabled")) {
-      return `\u8BCA\u65AD\uFF1A\u63D2\u4EF6\u7684\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u5F00\u5173\u88AB\u5173\u95ED\uFF08\u6D4F\u89C8\u5668\u8FD8\u5F00\u7740\uFF0C\u65E0\u9700\u91CD\u542F\uFF09\u2014\u2014\u8BF7\u7528\u6237\u5230\u63D2\u4EF6\u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u8FDE\u63A5 \u2192 \u91CD\u65B0\u6253\u5F00\u9876\u90E8\u5F00\u5173\uFF0C\u914D\u5BF9\u5173\u7CFB\u4FDD\u7559\uFF0C\u7EA6 5 \u79D2\u81EA\u52A8\u91CD\u8FDE\u540E\u91CD\u8BD5`;
+      return `诊断：插件的「智能体连接」开关被关闭（浏览器还开着，无需重启）——请用户到插件设置 → 智能体连接 → 重新打开顶部开关，配对关系保留，约 5 秒自动重连后重试`;
     }
     if (c.reason.includes("not publicly available")) {
-      return `\u8BCA\u65AD\uFF1A\u63D2\u4EF6\u4FA7\u5224\u5B9A\u672C\u5730\u6865\u4E0D\u53EF\u7528\u5DF2\u81EA\u52A8\u65AD\u5F00\u2014\u2014\u8BF7\u7528\u6237\u91CD\u542F\u6D4F\u89C8\u5668\uFF0C\u518D\u5230\u63D2\u4EF6\u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u8FDE\u63A5\u91CD\u65B0\u6253\u5F00\u5F00\u5173`;
+      return `诊断：插件侧判定本地桥不可用已自动断开——请用户重启浏览器，再到插件设置 → 智能体连接重新打开开关`;
     }
     if (c.code === 1006 || c.code === 1005 || c.code === 1001) {
-      return `\u8BCA\u65AD\uFF1A\u8FDE\u63A5\u88AB\u76F4\u63A5\u5207\u65AD\uFF08\u6D4F\u89C8\u5668\u88AB\u5173\u95ED\uFF0C\u6216\u63D2\u4EF6\u88AB\u7981\u7528/\u91CD\u8F7D\u2014\u2014\u65E0\u544A\u522B\u5E27\uFF09\u2014\u2014\u8BF7\u7528\u6237\u91CD\u5F00\u6D4F\u89C8\u5668\u5E76\u786E\u8BA4\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\uFF0C\u63D2\u4EF6\u7EA6 5 \u79D2\u81EA\u52A8\u91CD\u8FDE\u540E\u91CD\u8BD5`;
+      return `诊断：连接被直接切断（浏览器被关闭，或插件被禁用/重载——无告别帧）——请用户重开浏览器并确认探栗插件已启用，插件约 5 秒自动重连后重试`;
     }
-    if (c.code === 1e3 && c.reason) {
-      return `\u8BCA\u65AD\uFF1A\u63D2\u4EF6\u4E3B\u52A8\u65AD\u5F00\uFF08${c.reason}\uFF09\u2014\u2014\u8BF7\u7528\u6237\u68C0\u67E5\u63D2\u4EF6\u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u8FDE\u63A5\u7684\u5F00\u5173\u72B6\u6001\u540E\u91CD\u8BD5`;
+    if (c.code === 1000 && c.reason) {
+      return `诊断：插件主动断开（${c.reason}）——请用户检查插件设置 → 智能体连接的开关状态后重试`;
     }
     return null;
   }
+
   /** ⭐1.2.16 B7：插件连接断开时中止所有等待中的任务（浏览器被关/插件掉线不再傻等 TASK_TIMEOUT，秒级返回失败） */
   abortPendingTasks() {
     if (!this.taskWaiters.size) return;
     const ids = [...this.taskWaiters.keys()];
-    log(`[lf-agent] \u63D2\u4EF6\u65AD\u5F00 \u2192 \u79D2\u7EA7\u4E2D\u6B62 ${ids.length} \u4E2A\u7B49\u5F85\u4E2D\u7684\u4EFB\u52A1`);
+    log(`[lf-agent] 插件断开 → 秒级中止 ${ids.length} 个等待中的任务`);
     for (const id of ids) {
       this.finishTask(id, {
         ok: false,
         error: {
           code: "TASK_ABORTED",
           // ⭐1.2.17 B3：诊断优先（开关关→指开关；被杀→指重开浏览器），无诊断才回落探测命令
-          message: `\u63D2\u4EF6\u8FDE\u63A5\u5DF2\u65AD\u5F00\uFF0C\u4EFB\u52A1\u5DF2\u4E2D\u6B62\u3002${this.disconnectDiagnosis() || extensionLaunchHint() || "\u8BF7\u91CD\u5F00\u6D4F\u89C8\u5668\uFF08\u63D2\u4EF6\u7EA6 5 \u79D2\u81EA\u52A8\u91CD\u8FDE\uFF09\u540E\u91CD\u8BD5\u3002"}`
-        }
+          message: `插件连接已断开，任务已中止。${this.disconnectDiagnosis() || extensionLaunchHint() || "请重开浏览器（插件约 5 秒自动重连）后重试。"}`,
+        },
       });
     }
   }
+
   /**
    * 下发任务并等待结果。
    * @returns {Promise<{ok:boolean, error?:object, [k:string]:unknown}>}
    */
   startTask(task, timeoutMs = LIST_TASK_TIMEOUT_MS) {
+    // ⭐r76 卫星模式：任务经主 Broker 中转下发（task.start 带 deviceId=本设备，插件按会话路由回执）
     if (this.relay) return this.startTaskViaRelay(task, timeoutMs);
     if (!this.extension.connected) {
+      // ⭐1.2.17 B3：有断开诊断（开关关/被杀）则诊断独占指引——开关关时「start chrome」是无效指引（B3 实测缺陷）
       const diag = this.disconnectDiagnosis();
       return Promise.resolve({
         ok: false,
         error: {
           code: "EXTENSION_NOT_CONNECTED",
-          message: this.awaitingPairing ? "\u63D2\u4EF6\u5DF2\u68C0\u6D4B\u5230\u672C\u8BBE\u5907\uFF0C\u4F46\u5C1A\u672A\u6279\u51C6\u914D\u5BF9\u3002\u8BF7\u8BA9\u7528\u6237\u5728\u63D2\u4EF6\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u4E2D\u6838\u5BF9\u8BBE\u5907\u6307\u7EB9\u5E76\u70B9\u51FB\u6279\u51C6\uFF0C\u7136\u540E\u91CD\u8BD5\u3002" : diag ? `\u672A\u8FDE\u63A5\u5230\u63A2\u6817\uFF08LeadsRadar\uFF09\u6D4F\u89C8\u5668\u63D2\u4EF6\u3002${diag}\u3002` : `\u672A\u8FDE\u63A5\u5230\u63A2\u6817\uFF08LeadsRadar\uFF09\u6D4F\u89C8\u5668\u63D2\u4EF6\u3002${extensionLaunchHint() || "\u82E5\u4F60\u6709\u7EC8\u7AEF\u6743\u9650\uFF0C\u53EF\u76F4\u63A5\u8FD0\u884C start chrome\uFF08\u6216 start msedge\uFF09\u6253\u5F00\u6D4F\u89C8\u5668\uFF0C\u63D2\u4EF6\u4F1A\u81EA\u52A8\u91CD\u8FDE\uFF08\u7EA6\u7B49 5 \u79D2\u518D\u91CD\u8BD5\uFF09"}\uFF1B\u5426\u5219\u8BF7\u8BA9\u7528\u6237\uFF1A1) \u6253\u5F00\u6D4F\u89C8\u5668\u5E76\u786E\u8BA4\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\uFF1B2) \u63D2\u4EF6\u8BBE\u7F6E\u9875 \u2192\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u2192 \u5F00\u542F\u9876\u90E8\u5F00\u5173\uFF0C\u7136\u540E\u91CD\u8BD5\u3002`
-        }
+          message: this.awaitingPairing
+            ? "插件已检测到本设备，但尚未批准配对。请让用户在插件设置页「智能体连接」中核对设备指纹并点击批准，然后重试。"
+            : diag
+              ? `未连接到探栗（LeadsRadar）浏览器插件。${diag}。`
+              : `未连接到探栗（LeadsRadar）浏览器插件。${extensionLaunchHint() || "若你有终端权限，可直接运行 start chrome（或 start msedge）打开浏览器，插件会自动重连（约等 5 秒再重试）——⭐R96ez 自救仅尝试一次：没起来或没终端权限就停手，禁换姿势（找 exe 路径直启/换 shell/换 PowerShell）反复重试"}；停手后转用户引导，请让用户：1) 手动打开浏览器并点一下探栗插件图标；2) 插件设置页 →「智能体连接」→ 开关关一下再开，弄好后重试。`,
+        },
       });
     }
     const taskId = `lf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.taskWaiters.delete(taskId);
+        /* ⭐R96gav 冻结确诊：协议层 pong 活着但插件 JS >45s 无任何应用层消息（20s 心跳停摆）
+           = SW 事件循环冻结——此时「先 query_local_data」救援通道同被冻结堵死（重试只是白等），
+           直接指引用户重启浏览器/重载插件，不再误导空转 */
+        const frozenMs = Date.now() - (this.lastPluginMsgAt || 0);
+        const frozen = this.lastPluginMsgAt > 0 && frozenMs > 45_000;
+        /* ⭐R96gr 冻结确诊即踢僵尸连接：冻结期协议 pong 由浏览器网络进程代答，15s 僵尸回收永远
+           不触发，旧连接半死不活挂着——任务继续白发进去超时、状态面板误导性显示「连接健康」。
+           主动 terminate → ws close 钩子全套善后（座席释放/connected=false/abortPendingTasks/
+           通知卫星）；插件侧 SW 一旦解冻（用户切回浏览器/交互唤醒）close 事件即达 →
+           scheduleReconnect 自动重连，通道自愈不再依赖用户重启 Chrome */
+        if (frozen && this.client) {
+          try { this.client.terminate(); } catch { /* noop */ }
+          log("[lf-agent] 冻结确诊：主动回收僵尸连接（插件恢复运行后会自动重连）");
+        }
         resolve({
           ok: false,
           error: {
-            code: "TASK_TIMEOUT",
-            message: `\u4EFB\u52A1\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)}s\uFF09\u3002\u6CE8\u610F\uFF1A\u63D2\u4EF6\u53EF\u80FD\u4ECD\u5728\u6267\u884C\uFF0C\u4E14\u91C7\u96C6\u6570\u636E\u4F1A\u5148\u843D\u63A2\u6817\u672C\u5730\u5E93\u2014\u2014\u8BF7\u5148\u7528 query_local_data \u67E5\u8BE2\u8BE5\u4EFB\u52A1\u7684 keyword/url \u5BF9\u5E94\u7ED3\u679C\uFF0C\u67E5\u5230\u5C31\u76F4\u63A5\u7528\u3001\u4E0D\u8981\u91CD\u53D1\uFF1B\u786E\u5B9E\u6CA1\u6709\u518D\u91CD\u53D1\u4EFB\u52A1\uFF08\u907F\u514D\u91CD\u590D\u6D88\u8017\u91C7\u96C6\u989D\u5EA6\uFF09\u3002`
-          }
+            code: frozen ? "PLUGIN_FROZEN" : "TASK_TIMEOUT",
+            message: frozen
+              ? `插件通道冻结：连接虽在，但插件已 ${Math.round(frozenMs / 1000)} 秒无任何应用层消息（事件循环停摆，重试任务/查库都会超时，不要重发；⭐R96gr 适配器已自动回收僵尸连接，插件恢复运行后会自动重连）。请用户：1) 切回浏览器点一下任意页面（冻结多因 Chrome 后台节能，前台交互即解冻），或重启 Chrome/到 chrome://extensions 重载探栗插件；2) 恢复后回一句「继续」，先 query_local_data 查已采到的数据（已落本地库不丢）；3) 若反复冻结：到 chrome://extensions → 探栗 → 详情页打开「允许在网站后台运行」类开关，或 Chrome 设置→性能 关闭「节能模式」。`
+              : `任务超时（${Math.round(timeoutMs / 1000)}s）。注意：插件可能仍在执行，且采集数据会先落探栗本地库——请先用 query_local_data 查询该任务的 keyword/url 对应结果，查到就直接用、不要重发；确实没有再重发任务（避免重复消耗采集额度）。`,
+          },
         });
       }, timeoutMs);
       this.taskWaiters.set(taskId, { resolve, timer, response: null });
       this.send({ type: "task.start", taskId, deviceId: DEVICE_ID, task });
-      log(`[lf-agent] \u4E0B\u53D1\u4EFB\u52A1 ${taskId} ${JSON.stringify(task)}`);
+      log(`[lf-agent] 下发任务 ${taskId} ${JSON.stringify(task)}`);
     });
   }
+
   /** ⭐r76 卫星模式任务下发：device.task.start → 主 Broker → 插件；回执经 device.task.result 回来触发 finishTask */
   startTaskViaRelay(task, timeoutMs) {
     const relay = this.relay;
     if (!relay || !relay.attached || !relay.extensionConnected) {
+      // ⭐1.2.17 B3：卫星同享断开诊断（主 Broker 经 device.extension.state 透传 close frame）
       const diag = this.disconnectDiagnosis();
       return Promise.resolve({
         ok: false,
         error: {
           code: "EXTENSION_NOT_CONNECTED",
-          message: this.awaitingPairing ? `\u63D2\u4EF6\u5DF2\u68C0\u6D4B\u5230\u672C\u8BBE\u5907\uFF08\u536B\u661F\u6A21\u5F0F\uFF09\uFF0C\u4F46\u5C1A\u672A\u6279\u51C6\u914D\u5BF9\u3002\u8BF7\u8BA9\u7528\u6237\u5728\u63D2\u4EF6\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u4E2D\u6838\u5BF9\u8BBE\u5907\u6307\u7EB9\u5E76\u70B9\u51FB\u6279\u51C6\uFF0C\u7136\u540E\u91CD\u8BD5\u3002\u6307\u7EB9\uFF1A${fingerprint}` : diag ? `\u672A\u8FDE\u63A5\u5230\u63A2\u6817\u63D2\u4EF6\u3002${diag}\u3002` : `\u672A\u8FDE\u63A5\u5230\u63A2\u6817\u63D2\u4EF6\uFF08\u672C\u673A\u591A\u4E2A AI \u52A9\u624B\u5171\u7528\u63D2\u4EF6\u8FDE\u63A5\uFF0C\u76F4\u8FDE\u7AEF\u5F53\u524D\u672A\u8FDE\u4E0A\uFF09\u3002${extensionLaunchHint() || "\u8BF7\u8BA9\u7528\u6237\uFF1A1) \u786E\u8BA4\u6D4F\u89C8\u5668\u5DF2\u6253\u5F00\u4E14\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\uFF1B2) \u63D2\u4EF6\u8BBE\u7F6E\u9875 \u2192\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u2192 \u5F00\u542F\u9876\u90E8\u5F00\u5173"}\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u91CD\u8BD5\u4E00\u6B21\u3002`
-        }
+          message: this.awaitingPairing
+            ? `插件已检测到本设备（卫星模式），但尚未批准配对。请让用户在插件设置页「智能体连接」中核对设备指纹并点击批准，然后重试。指纹：${fingerprint}`
+            : diag
+              ? `未连接到探栗插件。${diag}。`
+              : `未连接到探栗插件（本机多个 AI 助手共用插件连接，直连端当前未连上——连接可能被 Trae 等别的 AI 助手占用，或插件没自动重连）。${extensionLaunchHint() || "请让用户：1) 确认浏览器已打开且探栗插件已启用；2) 插件设置页 →「智能体连接」→ 开关关一下再开"}。⭐R96ez 终端自救仅尝试一次：没起来或没终端权限就停手，禁换姿势反复重试；转用户引导二选一：1) 在浏览器里点一下探栗插件图标，或到插件设置把「智能体连接」开关关一下再开；2) 若 Trae 等别的 AI 助手也连着探栗，把它那边的连接停一下。用户弄好后说声复查，每 8 秒重试一次（重试指重发工具调用，不是反复启动浏览器）。`,
+        },
       });
     }
     const taskId = `lf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     return new Promise((resolve) => {
+      const sentAt = Date.now();
       const timer = setTimeout(() => {
         this.taskWaiters.delete(taskId);
-        resolve({
-          ok: false,
-          error: {
-            code: "TASK_TIMEOUT",
-            message: `\u4EFB\u52A1\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)}s\uFF09\u3002\u6CE8\u610F\uFF1A\u63D2\u4EF6\u53EF\u80FD\u4ECD\u5728\u6267\u884C\uFF0C\u4E14\u91C7\u96C6\u6570\u636E\u4F1A\u5148\u843D\u63A2\u6817\u672C\u5730\u5E93\u2014\u2014\u8BF7\u5148\u7528 query_local_data \u67E5\u8BE2\u8BE5\u4EFB\u52A1\u7684 keyword/url \u5BF9\u5E94\u7ED3\u679C\uFF0C\u67E5\u5230\u5C31\u76F4\u63A5\u7528\u3001\u4E0D\u8981\u91CD\u53D1\uFF1B\u786E\u5B9E\u6CA1\u6709\u518D\u91CD\u53D1\u4EFB\u52A1\uFF08\u907F\u514D\u91CD\u590D\u6D88\u8017\u91C7\u96C6\u989D\u5EA6\uFF09\u3002`
+        /* ⭐R96gp 卫星同享冻结确诊（用户实报「栗子触达」300s 超时后 query_local_data 连试 5 次全超时
+           白转 7 分钟，宿主只能瞎猜「被别的助手占用」）：中转通道连接健康（relay.extensionConnected）
+           + 本任务发出后零插件应用层消息（challenge/task.progress/task.result 均无打点更新，
+           lastPluginMsgAt < sentAt）= 插件 SW 事件循环冻结——直连版 R96gav 判定靠 20s ping 打点，
+           卫星收不到 ping，改用 sentAt 锚点：任务期间插件一条消息都没来过即冻结，
+           救援通道（query_local_data 同走任务通道）必同堵死，直接指引用户重启，不再误导「先查库」空转
+           ⭐R96g1bb 快车道豁免：工具型任务（FAST_LANE_MODES：日报/账本/话术/设置等）执行期天然零
+           协议消息（无 progress 心跳），「零消息」对它们是常态不是死亡证据——执行慢（云端 fetch 抖动）
+           ≠冻结，只报 TASK_TIMEOUT 不误诊 PLUGIN_FROZEN（261103 实报 lead_records 同通道刚成功、
+           get_daily_report 一慢就被误诊「Chrome 休眠」，用户被指引点 Chrome/重载插件全无效动作） */
+        const fastLane = FAST_LANE_MODES.has(String(task?.mode || ""));
+        const frozen = !fastLane && this.relay?.extensionConnected && this.lastPluginMsgAt < sentAt;
+        /* ⭐R96g1bc frozen 候选先探中转通道再定罪（261104 直连实验坐实误诊链）：卫星与主 Broker 的
+           TCP 半死（宿主睡眠恢复/网络切换）时 ws.send 写进死连接蒸发不报错、close 永不触发——
+           extensionConnected 快照恒 true + 任务零回执 = 旧判定直接冤枉「插件冻结」，用户被指引点
+           Chrome/重载插件全无效（插件实测活着：同任务直连 5.5s 回包）。探针 device.ping 2.5s：
+           有 pong=通道活→真插件冻结（原话术）；无 pong=中继半死→RELAY_STALE 精准话术+掐线自愈
+           （terminate→exitRelayMode→重新竞争端口，秒级重连恢复） */
+        if (!frozen) {
+          resolve({
+            ok: false,
+            error: {
+              code: "TASK_TIMEOUT",
+              message: fastLane
+                ? `任务超时（${Math.round(timeoutMs / 1000)}s）。这是工具型任务（${String(task?.mode || "?")}），插件大概率活着、只是执行慢（多为云端接口抖动）——这不是插件冻结，禁引导用户重载插件/点浏览器；稍等片刻原样重试即可，重试仍超时再向用户说明网络波动。`
+                : `任务超时（${Math.round(timeoutMs / 1000)}s）。注意：插件可能仍在执行，且采集数据会先落探栗本地库——请先用 query_local_data 查询该任务的 keyword/url 对应结果，查到就直接用、不要重发；确实没有再重发任务（避免重复消耗采集额度）。`,
+            },
+          });
+          return;
+        }
+        this.probeRelayAlive(2500).then((alive) => {
+          if (alive) {
+            resolve({
+              ok: false,
+              error: {
+                code: "PLUGIN_FROZEN",
+                message: `插件通道冻结：连接虽在，但本任务发出后插件零消息（事件循环停摆，重试任务/查库都会超时，不要重发）。请用户：1) 切回浏览器点一下任意页面（冻结多因 Chrome 后台节能，前台交互即解冻；⭐R96gr 卫星端无连接句柄只能指路，主 Broker 直连端已自动踢僵尸连接），或重启 Chrome/到 chrome://extensions 重载探栗插件；2) 恢复后回一句「继续」，先 query_local_data 查已采到的数据（已落本地库不丢）；3) 若反复冻结：到 chrome://extensions → 探栗 → 详情页打开「允许在网站后台运行」类开关，或 Chrome 设置→性能 关闭「节能模式」。`,
+              },
+            });
+            return;
           }
+          try { this.relay?.ws?.terminate(); } catch { /* noop */ }
+          resolve({
+            ok: false,
+            error: {
+              code: "RELAY_STALE",
+              message: `中转通道半死：本宿主与主 Broker 的中继连接已失效（宿主睡眠恢复/网络切换后常见——TCP 半开时消息写进死连接蒸发，插件无恙、已采数据不丢）。已自动掐线并触发重连（秒级恢复）：请直接原样重试本任务；若仍报此错，完全退出并重开本宿主（WorkBuddy/豆包等）即可。⚠️ 无需重载插件、无需重启 Chrome——这不是插件冻结（通道活性探针 2.5s 无回包确诊）。`,
+            },
+          });
         });
       }, timeoutMs);
       this.taskWaiters.set(taskId, { resolve, timer, response: null });
       try {
         relay.ws.send(JSON.stringify({ type: "device.task.start", taskId, task }));
-        log(`[lf-agent] \u4E0B\u53D1\u4EFB\u52A1\uFF08\u4E2D\u8F6C\uFF09${taskId} ${JSON.stringify(task)}`);
+        log(`[lf-agent] 下发任务（中转）${taskId} ${JSON.stringify(task)}`);
       } catch {
         this.taskWaiters.delete(taskId);
         clearTimeout(timer);
-        resolve({ ok: false, error: { code: "RELAY_BROKEN", message: "\u4E0E\u4E3B Broker \u7684\u4E2D\u8F6C\u8FDE\u63A5\u5DF2\u65AD\u5F00\uFF0C\u6B63\u5728\u91CD\u65B0\u7ADE\u4E89\u7AEF\u53E3\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002" } });
+        resolve({ ok: false, error: { code: "RELAY_BROKEN", message: "与主 Broker 的中转连接已断开，正在重新竞争端口，请稍后重试。" } });
       }
     });
   }
+
   /** connection_status 快照（驱动宿主 AI 的 onboarding 状态机）；⭐403 token 经济版：welcome 全文仅在 step=3 下发，step 1/2 轮询每轮省约 200 tokens */
   /** ⭐B7b-P1 存货提示（主/卫星 hint 共用）：插件侧有已完成未领取结果时，引导 AI 先领取再决定重发 */
   pendingResultsHint() {
     const list = this.extension.pendingResults || [];
     if (!list.length) return "";
-    const brief = list.slice(0, 3).map((p) => `${p.mode || "?"}\xB7${p.keyword || p.url || p.taskId}`).join("\u3001");
-    return `\u6CE8\u610F\uFF1A\u6709 ${list.length} \u6761\u5DF2\u5B8C\u6210\u7684\u4EFB\u52A1\u7ED3\u679C\u672A\u88AB\u9886\u53D6\uFF08${brief}${list.length > 3 ? " \u7B49" : ""}\uFF09\u2014\u2014\u8BF7\u5148\u7528 leadsradar_claim_pending_result \u9886\u53D6\uFF08\u4E0D\u5360\u91C7\u96C6\u9650\u989D\uFF09\uFF0C\u9886\u5230\u76F4\u63A5\u7528\uFF1B\u6CA1\u6709\u9700\u8981\u7684\u518D\u8003\u8651\u65B0\u4EFB\u52A1\uFF0C\u907F\u514D\u91CD\u590D\u6D88\u8017\u989D\u5EA6\u3002`;
+    const brief = list.slice(0, 3).map((p) => `${p.mode || "?"}·${p.keyword || p.url || p.taskId}`).join("、");
+    return `注意：有 ${list.length} 条已完成的任务结果未被领取（${brief}${list.length > 3 ? " 等" : ""}）——请先用 leadsradar_claim_pending_result 领取（不占采集限额），领到直接用；没有需要的再考虑新任务，避免重复消耗额度。`;
   }
+
   statusSnapshot() {
+    /* ⭐r96ze 卫星 step 判定改为自身配对态优先：中转通道活着（主 Broker 已连插件）≠ 本设备已批准——
+       旧逻辑 connected(中转通道) ? 3 : awaitingPairing ? 2 : 1，未批准卫星恒报 step=3「可以开工」（状态谎报），
+       宿主 AI 直接开工撞 PAIRING_REQUIRED 墙。新逻辑：通道死→1；通道活但未配对→2（等批准）；配对+通道→3 */
     const connected = this.relay ? this.relay.extensionConnected : this.extension.connected;
     const awaitingPairing = this.awaitingPairing;
-    const step = this.relay ? !connected ? 1 : this.selfPaired ? 3 : 2 : connected ? 3 : awaitingPairing ? 2 : 1;
+    const step = this.relay
+      ? (!connected ? 1 : this.selfPaired ? 3 : 2)
+      : (connected ? 3 : awaitingPairing ? 2 : 1);
     const base = {
       ok: true,
       adapter: {
@@ -4776,11 +1421,24 @@ var AgentBroker = class {
         protocolVersion: PROTOCOL_VERSION,
         // ⭐r76 中转模式标记：true=本设备经另一宿主的主 Broker 共享插件连接
         relayMode: Boolean(this.relay),
-        relayThrough: this.relay?.hostLabel || this.relay?.host || null
+        relayThrough: this.relay?.hostLabel || this.relay?.host || null,
+        // ⭐R79 自更新三态：idle=未查（无网/低版本 node）/ checking=检查中 / up-to-date=已是最新 /
+        //   updated-pending-restart=新版已写入、重启宿主后生效——管家栗报到表格据此渲染升级提示
+        update: {
+          state: selfUpdate.state,
+          currentVersion: ADAPTER_VERSION,
+          latestVersion: selfUpdate.latestVersion,
+          fromVersion: selfUpdate.fromVersion,
+        },
       },
       // ⭐R76 五技能最新版本表（宿主技能自检用）：宿主 AI 拿自己技能文件 frontmatter 的 version 对照，
       //   落后就指引用户更新技能——Agent 只能识别+指路，技能安装/更新机制在宿主手里
-      skills_latest: SKILLS_LATEST,
+      // ⭐R96g1be 表源改云端实时缓存（skillsLatestLive）：同步读、connection_status 侧 void 刷新——
+      //   进程不重启也能在 TTL 后见新表，破「内置常量冻结锁死技能更新」死锁
+      skills_latest: skillsLatestLive.table,
+      // ⭐R79b 插件商店最新版（插件发版时同步 bump 此值）：管家栗对照 extension.extensionVersion，
+      //   落后=商店还没推到（灰度几小时~几天），提醒用户 chrome://extensions 点「更新」可提前——商店自动更为主，此表只是提速提醒
+      plugin_latest: PLUGIN_LATEST,
       extension: {
         connected,
         extensionId: this.extension.extensionId || null,
@@ -4796,9 +1454,15 @@ var AgentBroker = class {
         // ⭐r81 P0-3 登录态透出：save_topic/云端入库等需登录——宿主动手前用 connection_status
         // 预检（wb 实测采完详情才报 CLOUD_ERROR，白消耗采集额度）。注意：握手时点的快照，
         // 中途登录/退出会过期，动作层 LOGIN_REQUIRED 报错是第二道防线
-        account: this.extension.account || { loggedIn: null, nickname: null }
-      }
+        account: this.extension.account || { loggedIn: null, nickname: null },
+        // ⭐R96et 插件所在浏览器透出：detectExtensionProfiles() 现成（扫 Chrome/Edge 各 profile 的
+        // Preferences 找 unpacked 探栗，10s 缓存）——closer 五项直核表「浏览器」行的数据源
+        // （261031 实报宿主写「待核」=数据源缺失非偷懒）；未连接=空数组
+        browsers: this.extension.connected ? detectExtensionProfiles() : [],
+      },
     };
+    // ⭐r76 卫星模式专属话术：不再引导「退出另一宿主」（多宿主已可共存）
+    // ⭐r96ze hint 三态按新 step：step=3 才说「可以开工」；step=2 引导批准（转告指纹）；step=1 等插件
     if (this.relay) {
       return {
         ...base,
@@ -4807,9 +1471,13 @@ var AgentBroker = class {
           awaitingPairing,
           portBound: false,
           relayMode: true,
-          hint: step === 3 ? `\u5DF2\u8FDE\u63A5\uFF08\u672C\u673A\u591A\u4E2A AI \u52A9\u624B\u5171\u7528\u8FD9\u6761\u63D2\u4EF6\u8FDE\u63A5\uFF09\uFF0C\u53EF\u4EE5\u5F00\u59CB\u91C7\u96C6\u4EFB\u52A1\u3002${this.pendingResultsHint()}` : step === 2 ? `\u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF1A\u628A adapter.fingerprint \u539F\u6837\u8F6C\u544A\u7528\u6237\uFF0C\u8BF7\u5176\u5230\u63D2\u4EF6\u8BBE\u7F6E\u9875\u786E\u8BA4\u662F\u81EA\u5DF1\u7684\u8BBE\u5907\u540E\u70B9\u300C\u6279\u51C6\u300D\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\uFF08\u6CE8\u610F\uFF1A\u6279\u51C6\u524D\u4EFB\u52A1\u4F1A\u88AB\u62D2\u7EDD\uFF0C\u522B\u6025\u7740\u5F00\u5DE5\uFF09\u3002` : `\u4E2D\u8F6C\u6A21\u5F0F\u7B49\u5F85\u63D2\u4EF6\uFF1A\u8BF7\u8BA9\u7528\u6237\u6253\u5F00\u6D4F\u89C8\u5668\u786E\u8BA4\u63A2\u6817\u63D2\u4EF6\u5DF2\u542F\u7528\u3001\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u5F00\u5173\u5DF2\u6253\u5F00\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002`
+          hint: step === 3
+            ? `已连接（本机多个 AI 助手共用这条插件连接），可以开始采集任务。${this.pendingResultsHint()}`
+            : step === 2
+              ? `等待用户批准配对：把 adapter.fingerprint 原样转告用户，请其到插件设置页确认是自己的设备后点「批准」，然后每 8 秒复查一次（注意：批准前任务会被拒绝，别急着开工）。`
+              : `中转模式等待插件：${(() => { const ok = autoLaunchExtensionHost(); return ok ? "已自动为你打开装插件的浏览器窗口——插件约 5 秒自动重连，稍等片刻喊「栗子在吗」复查即可" : (this.disconnectDiagnosis() || extensionLaunchHint() || "请让用户打开浏览器确认探栗插件已启用、设置页「智能体连接」开关已打开"); })()}，然后每 8 秒复查一次。`,
         },
-        welcome: step === 3 ? { fixedCopy: WELCOME_FIXED_COPY } : null
+        welcome: step === 3 ? { fixedCopy: WELCOME_FIXED_COPY } : null,
       };
     }
     return {
@@ -4821,213 +1489,543 @@ var AgentBroker = class {
         // ⭐r85 portBlocked：EADDRINUSE 且占用者探测无应答 → Windows 动态端口保留段圈走端口。
         //   让宿主 AI 直接把根治命令转告用户，而不是一起懵在「连接器连接失败」
         portBlocked: this.portBlocked === true,
-        hint: this.portBlocked ? `\u9002\u914D\u5668\u7AEF\u53E3 ${PORT} \u88AB Windows \u52A8\u6001\u7AEF\u53E3\u4FDD\u7559\uFF08Hyper-V/WSL \u6392\u9664\u6BB5\uFF09\u6321\u4F4F\uFF1Abind \u88AB\u62D2\u4F46\u65E0\u8FDB\u7A0B\u5360\u7528\uFF0C\u901A\u5E38\u51E0\u5341\u5206\u949F\u5185\u81EA\u52A8\u6062\u590D\uFF0C\u9002\u914D\u5668\u5728\u6301\u7EED\u91CD\u8BD5\u3002\u8BF7\u628A\u8FD9\u6761\u6839\u6CBB\u547D\u4EE4\u8F6C\u544A\u7528\u6237\uFF08\u7BA1\u7406\u5458 PowerShell \u8FD0\u884C\u4E00\u6B21\u6C38\u4E45\u751F\u6548\uFF09\uFF1Anet stop winnat ; netsh int ipv4 add excludedportrange protocol=tcp startport=${PORT} numberofports=1 ; net start winnat\uFF08\u8FD0\u884C\u5B8C\u91CD\u542F\u672C\u4F1A\u8BDD\u5373\u8FDE\u4E0A\uFF09\u3002\u8F6C\u544A\u540E\u6BCF 30 \u79D2\u590D\u67E5\u4E00\u6B21\u3002` : !this.portBound ? `\u672C\u9002\u914D\u5668\u7684\u672C\u673A\u7AEF\u53E3 ${PORT} \u6B63\u5728\u88AB\u5360\u7528\u4E14\u5C1A\u672A\u5B8C\u6210\u4E2D\u8F6C\u534F\u5546\uFF08\u6B63\u5728\u81EA\u52A8\u5904\u7406\uFF1A\u540C\u5BBF\u4E3B\u5B64\u513F\u4F1A\u88AB\u63A5\u7BA1\uFF0C\u5F02\u5BBF\u4E3B\u4F1A\u81EA\u52A8\u8F6C\u5165\u4E2D\u8F6C\u5171\u5B58\uFF09\u3002\u8BF7\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\uFF1B\u82E5\u8D85\u8FC7 1 \u5206\u949F\u4ECD\u505C\u7559\u5728\u6B64\u72B6\u6001\uFF0C\u8BF7\u7528\u6237\u5B8C\u5168\u9000\u51FA\u6240\u6709 AI \u52A9\u624B\uFF08\u542B\u6258\u76D8\uFF09\u540E\u91CD\u5F00\u3002` : step === 1 ? `\u63D2\u4EF6\u672A\u8FDE\u63A5\uFF1A${this.disconnectDiagnosis() || extensionLaunchHint() || "\u82E5\u4F60\u6709\u7EC8\u7AEF\u6743\u9650\u53EF\u8FD0\u884C start chrome\uFF08\u6216 start msedge\uFF09\u6253\u5F00\u6D4F\u89C8\u5668\uFF0C\u63D2\u4EF6\u7EA6 5 \u79D2\u5185\u81EA\u52A8\u91CD\u8FDE"}\uFF1B\u5426\u5219\u8BF7\u7528\u6237\u5728\u6D4F\u89C8\u5668\u6253\u5F00\u63A2\u6817\u63D2\u4EF6 \u2192 \u8BBE\u7F6E \u2192 \u667A\u80FD\u4F53\u8FDE\u63A5 \u2192 \u6253\u5F00\u9876\u90E8\u5F00\u5173\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002` : step === 2 ? `\u7B49\u5F85\u7528\u6237\u6279\u51C6\u914D\u5BF9\uFF1A\u628A adapter.fingerprint \u539F\u6837\u8F6C\u544A\u7528\u6237\uFF0C\u8BF7\u5176\u5230\u63D2\u4EF6\u8BBE\u7F6E\u9875\u6838\u5BF9\u6307\u7EB9\u4E00\u81F4\u540E\u70B9\u300C\u6279\u51C6\u300D\uFF0C\u7136\u540E\u6BCF 8 \u79D2\u590D\u67E5\u4E00\u6B21\u3002\u6CE8\u610F\uFF1A\u82E5 extension.connected \u4E3A false\uFF0C\u8BF4\u660E\u8FD9\u662F\u63D2\u4EF6\u65AD\u5F00\u524D\u7684\u65E7\u72B6\u6001\u2014\u2014\u8BF7\u63D0\u9192\u7528\u6237\u68C0\u67E5\u63D2\u4EF6\u5F00\u5173\u662F\u5426\u6253\u5F00\uFF08\u6216\u91CD\u65B0\u52A0\u8F7D\u63D2\u4EF6\u540E\u91CD\u65B0\u6253\u5F00\uFF09\uFF0C\u63D2\u4EF6\u91CD\u8FDE\u4F1A\u81EA\u52A8\u91CD\u65B0\u63E1\u624B\u3002` : `\u5DF2\u8FDE\u63A5\uFF0C\u53EF\u4EE5\u5F00\u59CB\u91C7\u96C6\u4EFB\u52A1\u3002${this.pendingResultsHint()}`
+        hint: this.portBlocked
+          ? `探栗MCP 端口 ${PORT} 被 Windows 动态端口保留（Hyper-V/WSL 排除段）挡住：bind 被拒但无进程占用，通常几十分钟内自动恢复，探栗MCP 在持续重试。请把这条根治命令转告用户（管理员 PowerShell 运行一次永久生效）：net stop winnat ; netsh int ipv4 add excludedportrange protocol=tcp startport=${PORT} numberofports=1 ; net start winnat（运行完重启本会话即连上）。转告后每 30 秒复查一次。`
+          : !this.portBound
+          ? `探栗MCP 的本机端口 ${PORT} 正在被占用且尚未完成中转协商（正在自动处理：同宿主孤儿会被接管，异宿主会自动转入中转共存）。请每 8 秒复查一次；若超过 1 分钟仍停留在此状态，请用户完全退出所有 AI 助手（含托盘）后重开。`
+          : step === 1
+            ? `插件未连接：${(() => { const ok = autoLaunchExtensionHost(); return ok ? "已自动为你打开装插件的浏览器窗口——插件约 5 秒自动重连，稍等片刻喊「栗子在吗」复查即可" : (this.disconnectDiagnosis() || extensionLaunchHint() || "若你有终端权限可运行 start chrome（或 start msedge）打开浏览器，插件约 5 秒内自动重连"); })()}；否则请用户在浏览器打开探栗插件 → 设置 → 智能体连接 → 打开顶部开关，然后每 8 秒复查一次。`
+            : step === 2
+              ? `等待用户批准配对：把 adapter.fingerprint 原样转告用户，请其到插件设置页核对指纹一致后点「批准」，然后每 8 秒复查一次。注意：若 extension.connected 为 false，说明这是插件断开前的旧状态——请提醒用户检查插件开关是否打开（或重新加载插件后重新打开），插件重连会自动重新握手。`
+              : `已连接，可以开始采集任务。${this.pendingResultsHint()}`,
       },
       // step<3 不下发 welcome（省 token）；step=3 由宿主 AI 原样展示给用户
-      welcome: step === 3 ? { fixedCopy: WELCOME_FIXED_COPY } : null
+      welcome: step === 3 ? { fixedCopy: WELCOME_FIXED_COPY } : null,
     };
   }
-};
-var WELCOME_FIXED_COPY = [
-  "\u2705 \u63A2\u6817\u5DF2\u8FDE\u63A5\uFF01\u73B0\u5728\u5C31\u53EF\u4EE5\u8BF4\uFF1A",
-  "\u300C\u6211\u5728\u505A\u5BB6\u88C5\u83B7\u5BA2\uFF0C\u63A2\u4E00\u4E0B\u5C0F\u7EA2\u4E66\u6700\u8FD1\u4EC0\u4E48\u5185\u5BB9\u8BC4\u8BBA\u533A\u7559\u8D44\u6700\u591A\u300D",
-  "\u300C\u63A2\u4E00\u4E0B\u8D77\u53F7\u5FEB\u7684\u5C0F\u7EA2\u4E66\u8D5B\u9053\uFF0C\u7ED9\u6211 10 \u4E2A\u5BF9\u6807\u8D26\u53F7\u300D",
-  "\u300C\u63A2\u4E00\u4E0B\u8FD9\u7BC7\u7206\u6B3E\u7684\u8BC4\u8BBA\u533A\uFF0C\u628A\u60F3\u8BE2\u4EF7\u7684\u4EBA\u90FD\u627E\u51FA\u6765\u300D"
+}
+
+/* ⭐r96y 欢迎文案 v2（用户拍板口径：「探一下」作为品牌动词自然融入所有示例——示例即激活词教学，
+ * 不再单独解释「说探栗或探一下再带上想查的」；省「不用记任何命令」防御性废话与能力清单过程黑话，
+   目的=方便宿主 AI 准确识别 + 建立品牌价值锚点） */
+const WELCOME_FIXED_COPY = [
+  "✅ 探栗已连接！现在就可以说：",
+  "「我在做家装获客，探一下小红书最近什么内容评论区留资最多」",
+  "「探一下起号快的小红书赛道，给我 10 个对标账号」",
+  "「探一下这篇爆款的评论区，把想询价的人都找出来」",
 ].join("\n");
-var MCP_INSTRUCTIONS = [
-  "\u63A2\u6817\uFF08LeadsRadar\uFF09\u5448\u73B0\u89C4\u8303\u2014\u2014\u5BF9\u6700\u7EC8\u7528\u6237\u8BF4\u8BDD\u65F6\u9075\u5B88\uFF0C\u56DB\u4E2A\u6280\u80FD\u901A\u7528\uFF1A",
-  "1. \u65F6\u95F4\u76F8\u5BF9\u5316\uFF1A\u63A5\u53E3\u8FD4\u56DE\u7684 ISO \u65F6\u95F4\u6233\uFF08\u5982 2026-04-16T16:00:00.000Z\uFF09\u4E00\u5F8B\u8F6C\u6210\u4EBA\u8BDD\u2014\u2014\u300C3 \u5929\u524D\u300D\u300C\u4E0A\u5468\u300D\u300C4\u670817\u65E5\u300D\uFF1B\u6570\u636E\u7ED3\u8BBA\u6807\u6CE8\u300C\u622A\u81F3\u91C7\u96C6\u65F6\u300D\uFF0C\u9632\u6B62\u7528\u6237\u5F53\u5B9E\u65F6\u6570\u636E\u3002",
-  "2. \u5B57\u6BB5\u767D\u540D\u5355\uFF1Aid\u3001xsec_token\u3001collected_at\u3001note_id\u3001author_id\u3001synced\u3001task_status \u7B49\u6280\u672F\u5B57\u6BB5\u4E0D\u8FDB\u7528\u6237\u89C6\u91CE\uFF1B\u7528\u6237\u53EA\u770B\u6807\u9898/\u4F5C\u8005/\u4E92\u52A8\u6570/\u76F8\u5BF9\u65F6\u95F4/\u94FE\u63A5/\u7ED3\u8BBA\u3002\u5185\u90E8\u5B57\u6BB5\u786E\u9700\u89E3\u91CA\u65F6\u7FFB\u8BD1\u6210\u4EBA\u8BDD\uFF08synced=false\u2192\u8FD8\u6CA1\u540C\u6B65\u5230\u4E91\u7AEF\uFF09\u3002",
-  "3. \u94FE\u63A5\u6807\u9898\u5316\uFF1A\u8D85\u957F\u5E26 token \u7684 URL \u6298\u53E0\u6210\u300A\u6807\u9898\u300B+\u300C\u67E5\u770B\u300D\uFF08markdown \u94FE\u63A5\uFF09\uFF0C\u4E0D\u88F8\u8D34\u957F URL \u5237\u5C4F\uFF1B\u62A5\u544A\u94FE\u63A5\u6CE8\u660E\u300C\u7F51\u9875\u7AEF\u770B\u5B8C\u6574\u7248\u300D\u3002",
-  "4. \u9519\u8BEF\u4E09\u6001\uFF1A\u5DE5\u5177\u62A5\u9519\u5148\u5F52\u7C7B\u518D\u8BF4\u8BDD\u2014\u2014\u77AC\u65F6\u7C7B\uFF08\u8D85\u65F6/\u7F51\u7EDC\u6296\u52A8\uFF09\u2192\u300C\u6211\u91CD\u8BD5\u4E00\u6B21\u300D\uFF1B\u9700\u7528\u6237\u64CD\u4F5C\u7C7B\uFF08\u672A\u767B\u5F55/\u63D2\u4EF6\u672A\u8FDE/\u9650\u989D\uFF09\u2192\u7ED9\u5177\u4F53\u4E00\u6B65\uFF08\u53BB\u54EA\u70B9\u4EC0\u4E48\uFF09\uFF1B\u80FD\u529B\u672A\u5F00\u901A\u7C7B\uFF08\u5B57\u6BB5\u67E5\u4E0D\u5230/\u529F\u80FD\u672A\u4E0A\u7EBF\uFF09\u2192\u76F4\u8BF4\u300C\u8FD9\u4E2A\u6570\u636E\u73B0\u5728\u62FF\u4E0D\u5230\u300D+\u7ED9\u66FF\u4EE3\u8DEF\u5F84\u3002\u7981\u6B62\u539F\u6837\u590D\u8FF0\u62A5\u9519\u7801\u548C\u5185\u90E8 message \u7ED9\u7528\u6237\u3002",
-  "5. \u957F\u4EFB\u52A1\u5148\u62A5\u9884\u671F\uFF1A\u6279\u91CF\u52A8\u4F5C\uFF08\u8BC4\u8BBA\u6316\u51E0\u767E\u6761\u3001\u5DE1 10 \u4E2A\u8D26\u53F7\uFF09\u5F00\u5DE5\u524D\u5148\u8BF4\u300C\u9884\u8BA1\u5206 N \u6279\u3001\u7EA6 X \u5206\u949F\u300D\uFF0C\u4E0D\u8BA9\u7528\u6237\u5E72\u7B49\uFF1B\u6BCF\u6279\u5B8C\u6210\u64AD\u62A5\u4E00\u884C\u8FDB\u5EA6\u3002"
+
+/** ⭐r82 宿主 AI 呈现层通用规范（initialize instructions 注入，四技能统一生效——
+ *  wb/豆包双 UX 评审 Quick Wins 汇聚）：一处维护全技能生效，免 4 份 SKILL.md 重复带同一段 */
+const MCP_INSTRUCTIONS = [
+  "探栗（LeadsRadar）呈现规范——对最终用户说话时遵守，四个技能通用：",
+  "1. 时间相对化：接口返回的 ISO 时间戳（如 2026-04-16T16:00:00.000Z）一律转成人话——「3 天前」「上周」「4月17日」；数据结论标注「截至采集时」，防止用户当实时数据。",
+  "2. 字段白名单：id、xsec_token、collected_at、note_id、author_id、synced、task_status 等技术字段不进用户视野；用户只看标题/作者/互动数/相对时间/链接/结论。内部字段确需解释时翻译成人话（synced=false→还没同步到云端）。",
+  "3. 链接标题化：超长带 token 的 URL 折叠成《标题》+「查看」（markdown 链接），不裸贴长 URL 刷屏；报告链接注明「网页端看完整版」。",
+  "4. 错误三态：工具报错先归类再说话——瞬时类（超时/网络抖动）→「我重试一次」；需用户操作类（未登录/插件未连/限额）→给具体一步（去哪点什么）；能力未开通类（字段查不到/功能未上线）→直说「这个数据现在拿不到」+给替代路径。禁止原样复述报错码和内部 message 给用户。",
+  "5. 长任务先报预期：批量动作（评论挖几百条、巡 10 个账号）开工前先说「预计分 N 批、约 X 分钟」，不让用户干等；每批完成播报一行进度。",
 ].join("\n");
-var broker = new AgentBroker();
+
+const broker = new AgentBroker();
+
+/* ⭐413 stdin EOF watchdog：宿主（豆包/WorkBuddy）以 stdio 方式 spawn 本适配器，
+   宿主退出/会话结束时 OS 关闭管道 → stdin 收到 EOF → 自动退出，根治孤儿进程占端口。
+   手动终端跑（launch-agent-local.cmd / node 直接跑）时 stdin 是 TTY，不会触发 end，不影响手动调试。
+   ⭐r90c HTTP 模式豁免：扣子场景用户后台/脚本拉起进程，stdin 可能立即 EOF（重定向空输入），不能触发自杀。 */
 if (!HTTP_MODE && process.stdin && !process.stdin.isTTY) {
   process.stdin.resume();
   process.stdin.on("end", () => {
-    log("[lf-agent] stdin EOF\uFF08\u5BBF\u4E3B\u5DF2\u9000\u51FA/\u7BA1\u9053\u5173\u95ED\uFF09\u2192 \u81EA\u52A8\u9000\u51FA\uFF0C\u4E0D\u518D\u5360\u7528\u7AEF\u53E3");
+    log("[lf-agent] stdin EOF（宿主已退出/管道关闭）→ 自动退出，不再占用端口");
     process.exit(0);
   });
 }
-var MAX_LIST_LIMIT = 300;
-var MAX_COMMENT_LIMIT = 500;
+
+/* ================= MCP 工具定义 ================= */
+
+const MAX_LIST_LIMIT = 300; // 对齐插件单批 300 硬上限（works/profile 列表）
+const MAX_COMMENT_LIMIT = 500; // ⭐r96g 评论单独 500：对齐风控 comments 500/500 与四技能承诺（原共用 300 属无谓收紧——AI 要 500 实得 300，排查 P2 实报）
+
 function capLimit(value, fallback, max = MAX_LIST_LIMIT) {
   const n = Math.floor(Number(value));
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.min(n, max);
 }
-var TOOLS = [
+
+const TOOLS = [
   {
     name: "leadsradar_connection_status",
-    description: "\u68C0\u67E5\u63A2\u6817\uFF08LeadsRadar\uFF09\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u72B6\u6001\u4E0E\u63A5\u5165\u8FDB\u5EA6\u3002\u5F00\u59CB\u4EFB\u4F55\u91C7\u96C6\u524D\u3001\u4EE5\u53CA\u914D\u5BF9\u7B49\u5F85\u671F\u95F4\u5E94\u8F6E\u8BE2\u672C\u5DE5\u5177\uFF08\u6BCF 8 \u79D2\u4E00\u6B21\uFF0C\u6700\u591A 12 \u6B21\uFF09\uFF1Aonboarding.step=1 \u8868\u793A\u63D2\u4EF6\u672A\u8FDE\u63A5\uFF08\u9700\u7528\u6237\u5F00\u542F\u63D2\u4EF6\u8BBE\u7F6E\u9875\u300C\u667A\u80FD\u4F53\u8FDE\u63A5\u300D\u5F00\u5173\uFF09\uFF1Bstep=2 \u8868\u793A\u7B49\u5F85\u7528\u6237\u5728\u63D2\u4EF6\u4E2D\u6279\u51C6\u914D\u5BF9\uFF1Bstep=3\uFF08extension.connected=true\uFF09\u8868\u793A\u5DF2\u5C31\u7EEA\uFF0C\u53EF\u4EE5\u8C03\u7528\u91C7\u96C6\u5DE5\u5177\u3002extension.account.loggedIn \u4E3A\u767B\u5F55\u6001\uFF08true=\u5DF2\u767B\u5F55/false=\u672A\u767B\u5F55/null=\u672A\u77E5\uFF09\uFF1A\u5B58\u9009\u9898\uFF08save_topic\uFF09\u7B49\u4E91\u7AEF\u5199\u5165\u52A8\u4F5C\u52A8\u624B\u524D\u5FC5\u67E5\u2014\u2014false \u65F6\u5148\u5F15\u5BFC\u7528\u6237\u5728\u63D2\u4EF6\u4E2A\u4EBA\u4E2D\u5FC3\u767B\u5F55\uFF0C\u522B\u5148\u6D88\u8017\u91C7\u96C6\u989D\u5EA6\uFF1BloggedIn=true \u65F6\u987A\u5E26\u53EF\u7528 extension.account.nickname \u79F0\u547C\u7528\u6237\u3002",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false }
+    description:
+      "检查探栗（LeadsRadar）浏览器插件连接状态与接入进度。开始任何采集前、以及配对等待期间应轮询本工具（每 8 秒一次，最多 12 次）：onboarding.step=1 表示插件未连接（需用户开启插件设置页「智能体连接」开关）；step=2 表示等待用户在插件中批准配对；step=3（extension.connected=true）表示已就绪，可以调用采集工具。extension.account.loggedIn 为登录态（true=已登录/false=未登录/null=未知）：存选题（save_topic）等云端写入动作动手前必查——false 时先引导用户在插件个人中心登录，别先消耗采集额度；loggedIn=true 时顺带可用 extension.account.nickname 称呼用户。",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "leadsradar_search_notes",
-    description: "\u5728\u5C0F\u7EA2\u4E66\u6216\u6296\u97F3\u6309\u5173\u952E\u8BCD\u641C\u7D22\u4F5C\u54C1\u5E76\u91C7\u96C6\u5217\u8868\u6570\u636E\uFF08\u6807\u9898\u3001\u70B9\u8D5E\u3001\u6536\u85CF\u3001\u8BC4\u8BBA\u6570\u3001\u4F5C\u8005\u3001\u94FE\u63A5\uFF09\u3002\u9002\u5408\uFF1A\u8D5B\u9053\u8C03\u7814\u3001\u7206\u6B3E\u53D1\u73B0\u3001\u9009\u9898\u7075\u611F\u3002\u8FD4\u56DE\u6309\u70ED\u5EA6\u6392\u5E8F\u7684\u7B14\u8BB0\u5217\u8868\u3002\u5B89\u5168\u9650\u989D\uFF1A\u5355\u6279\u6700\u591A 300 \u6761\u300130 \u5206\u949F\u5185\u7D2F\u8BA1\u6700\u591A 600 \u6761\uFF08\u4E3A\u4FDD\u969C\u8D26\u53F7\u5B89\u5168\uFF0C\u8D85\u9650\u8BF7\u6C42\u4F1A\u88AB\u81EA\u52A8\u62D2\u7EDD\u5E76\u8FD4\u56DE\u53EF\u8BFB\u9519\u8BEF\u2014\u2014\u8BF7\u5728\u5E03\u7F6E\u5927\u6279\u91CF\u4EFB\u52A1\u524D\u5148\u544A\u77E5\u7528\u6237\u6B64\u9650\u5236\uFF0C\u5E76\u4E3B\u52A8\u5EFA\u8BAE\u62C6\u6279\uFF09\u3002",
+    description:
+      "在小红书或抖音按关键词搜索作品并采集列表数据（标题、点赞、收藏、评论数、作者、链接）。适合：赛道调研、爆款发现、选题灵感。返回按热度排序的笔记列表。安全限额：单批最多 300 条、30 分钟内累计最多 600 条（为保障账号安全，超限请求会被自动拒绝并返回可读错误——请在布置大批量任务前先告知用户此限制，并主动建议拆批）。",
     inputSchema: {
       type: "object",
       properties: {
-        keyword: { type: "string", description: "\u641C\u7D22\u5173\u952E\u8BCD\uFF0C\u4F8B\u5982\u300C\u5BB6\u88C5\u83B7\u5BA2\u300D" },
-        platform: { type: "string", enum: ["xiaohongshu", "douyin"], description: "\u5E73\u53F0\uFF0C\u9ED8\u8BA4 xiaohongshu" },
-        limit: { type: "integer", description: "\u91C7\u96C6\u6761\u6570\u4E0A\u9650\uFF081-300\uFF0C\u9ED8\u8BA4 10\uFF09" }
+        keyword: { type: "string", description: "搜索关键词，例如「家装获客」" },
+        platform: { type: "string", enum: ["xiaohongshu", "douyin"], description: "平台，默认 xiaohongshu" },
+        limit: { type: "integer", description: "采集条数上限（1-300，默认 10）" },
       },
       required: ["keyword"],
-      additionalProperties: false
-    }
+      additionalProperties: false,
+    },
   },
   {
     name: "leadsradar_capture_profile",
-    description: "\u91C7\u96C6\u67D0\u4F4D\u535A\u4E3B\u4E3B\u9875\u7684\u5168\u90E8/\u8FD1\u671F\u4F5C\u54C1\u5217\u8868\uFF08\u5C0F\u7EA2\u4E66\u6216\u6296\u97F3\uFF09\u3002\u9002\u5408\uFF1A\u5BF9\u6807\u8D26\u53F7\u5206\u6790\u3001\u8D26\u53F7\u5185\u5BB9\u7B56\u7565\u7814\u7A76\u3002\u9700\u63D0\u4F9B\u535A\u4E3B\u4E3B\u9875 URL\u3002\u5B89\u5168\u9650\u989D\uFF1A\u5355\u6279\u6700\u591A 300 \u6761\u300130 \u5206\u949F\u5185\u7D2F\u8BA1\u6700\u591A 600 \u6761\uFF08\u4E3A\u4FDD\u969C\u8D26\u53F7\u5B89\u5168\uFF0C\u8D85\u9650\u8BF7\u6C42\u4F1A\u88AB\u81EA\u52A8\u62D2\u7EDD\u5E76\u8FD4\u56DE\u53EF\u8BFB\u9519\u8BEF\u2014\u2014\u8BF7\u5728\u5E03\u7F6E\u5927\u6279\u91CF\u4EFB\u52A1\u524D\u5148\u544A\u77E5\u7528\u6237\u6B64\u9650\u5236\uFF0C\u5E76\u4E3B\u52A8\u5EFA\u8BAE\u62C6\u6279\uFF09\u3002",
+    description:
+      "采集某位博主主页的全部/近期作品列表（小红书或抖音）。适合：对标账号分析、账号内容策略研究。需提供博主主页 URL。安全限额：单批最多 300 条、30 分钟内累计最多 600 条（为保障账号安全，超限请求会被自动拒绝并返回可读错误——请在布置大批量任务前先告知用户此限制，并主动建议拆批）。⭐深度采集版（deep:true）：与插件账号 Tab「深度采集」按钮同源同引擎——逐条进详情页采集正文+全部评论，收尾自动做评论意向快扫（A3 分级）与账号四分类打分；因需逐条翻页耗时 5-20 分钟，会立即返回 pending 回执（不阻塞对话），完成后对栗子说「栗子报告」取报告。深度采集同样必须前台浏览器窗口。非会员深采逐条占采集限额。⭐R96cf 快扫版默认联动插件监控页「扫描规则」的深度快扫设置（默认开、可在监控页关）：开着时列表采完自动对最新 4 条作品采评论（只采评论不做正文拆解，已扫过自动跳过、每轮只深扫新作品），回执深扫行如实转述即可、无需额外操作。",
     inputSchema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "\u535A\u4E3B\u4E3B\u9875 URL\uFF08\u5982 https://www.xiaohongshu.com/user/profile/xxx\uFF09" },
-        limit: { type: "integer", description: "\u91C7\u96C6\u6761\u6570\u4E0A\u9650\uFF081-300\uFF0C\u9ED8\u8BA4 20\uFF09" }
+        url: { type: "string", description: "博主主页 URL（如 https://www.xiaohongshu.com/user/profile/xxx）" },
+        limit: { type: "integer", description: "采集条数上限（1-300，默认 20；deep 模式下为详情条数 1-50，默认 20）" },
+        deep: { type: "boolean", description: "深度采集开关：true=逐条进详情+采评论+A3 快扫+四分类（与插件「深度采集」按钮同链，5-20 分钟异步 pending→栗子报告）；默认 false 仅作品列表" },
+        comments_limit: { type: "integer", description: "deep 模式每篇评论上限（10-100，默认 50）" },
       },
       required: ["url"],
-      additionalProperties: false
-    }
+      additionalProperties: false,
+    },
   },
   {
     name: "leadsradar_capture_note_comments",
-    description: "\u91C7\u96C6\u4E00\u7BC7\u7B14\u8BB0/\u89C6\u9891\u7684\u8BC4\u8BBA\u533A\uFF08\u8BC4\u8BBA\u5185\u5BB9\u3001\u70B9\u8D5E\u6570\u3001\u8BC4\u8BBA\u8005\u4FE1\u606F\uFF09\u3002\u9002\u5408\uFF1A\u627E\u5BA2\u6237\u7EBF\u7D22\uFF08\u8BC4\u8BBA\u7559\u8D44/\u6C42\u63A8\u8350/\u95EE\u4EF7\u683C\uFF09\u3001\u6316\u7528\u6237\u9700\u6C42\u4E0E\u75DB\u70B9\u3002\u9700\u63D0\u4F9B\u7B14\u8BB0 URL\u3002\u5B89\u5168\u9650\u989D\uFF1A\u5355\u7BC7\u6700\u591A 500 \u6761\u8BC4\u8BBA\uFF08\u4E3A\u4FDD\u969C\u8D26\u53F7\u5B89\u5168\uFF0C\u8D85\u9650\u8BF7\u6C42\u4F1A\u88AB\u81EA\u52A8\u62D2\u7EDD\u5E76\u8FD4\u56DE\u53EF\u8BFB\u9519\u8BEF\u2014\u2014\u8BF7\u5728\u5E03\u7F6E\u5927\u6279\u91CF\u4EFB\u52A1\u524D\u5148\u544A\u77E5\u7528\u6237\u6B64\u9650\u5236\uFF09\u3002",
+    description:
+      "采集一篇笔记/视频的评论区（评论内容、点赞数、评论者信息）。适合：找客户线索（评论留资/求推荐/问价格）、挖用户需求与痛点。需提供笔记 URL。安全限额：单篇最多 500 条评论（为保障账号安全，超限请求会被自动拒绝并返回可读错误——请在布置大批量任务前先告知用户此限制）。⭐触达/回评等出分级名单的场景（⭐R96ez）：默认 limit=30 只覆盖热门区——采集后须再调 query_local_data(source=comments, note_url=同链接) 拉本地库已有评论，按「作者+评论内容」去重合并，分级与名单永远基于合并后全量，禁只用本轮新采（重跑不合并会导致名单与低档计数集体缩水）。⭐回执含 note_meta（⭐R96g1ai：title/author_name/note_url 等，本地库反查；⭐R96g1aj 互动四项透全 like/comment/collect/share count——【作品详情】互动行四项照填，小红书不显转、抖音尾加 🔁）——出【回复任务】块时作品标题以此为准，禁自拼「未设标题·xx」；⭐R96g1aj 起引擎自动补采详情（库内缺标题时同页先采一次详情再采评论，一次开页不额外占限额），note_meta 正常必含标题；仍缺失（补采失败）先调 note_detail 补。",
     inputSchema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "\u7B14\u8BB0/\u89C6\u9891 URL" },
-        limit: { type: "integer", description: "\u8BC4\u8BBA\u6761\u6570\u4E0A\u9650\uFF08\u9ED8\u8BA4 30\uFF09" }
+        url: { type: "string", description: "笔记/视频 URL" },
+        limit: { type: "integer", description: "评论条数上限（默认 30 只覆盖热门区；触达/分级名单场景建议显式传 50——热门区按👍排序 A3 集中在前，50 条≈15 秒；⭐R96gcj 提速：100 条要 27 秒起，仅深挖/A3 明显偏少时再加到 100~200）" },
       },
       required: ["url"],
-      additionalProperties: false
-    }
+      additionalProperties: false,
+    },
   },
   {
     name: "leadsradar_note_detail",
-    description: "\u91C7\u96C6\u4E00\u7BC7\u7B14\u8BB0/\u89C6\u9891\u7684\u8BE6\u60C5\u6570\u636E\uFF08\u6B63\u6587\u3001\u6807\u7B7E\u3001\u4E92\u52A8\u6570\u636E\u3001\u4F5C\u8005\u4FE1\u606F\u7B49\uFF09\u3002\u9002\u5408\uFF1A\u7206\u6B3E\u62C6\u89E3\u3001\u5355\u7BC7\u6DF1\u5EA6\u5206\u6790\u3002\u9700\u63D0\u4F9B\u7B14\u8BB0 URL\u3002\u5B89\u5168\u9650\u989D\uFF1A\u5355\u6279\u6700\u591A 20 \u7BC7\u300130 \u5206\u949F\u5185\u7D2F\u8BA1\u6700\u591A 100 \u7BC7\uFF08\u4E3A\u4FDD\u969C\u8D26\u53F7\u5B89\u5168\uFF0C\u8D85\u9650\u8BF7\u6C42\u4F1A\u88AB\u81EA\u52A8\u62D2\u7EDD\u5E76\u8FD4\u56DE\u53EF\u8BFB\u9519\u8BEF\u2014\u2014\u8BF7\u5728\u5E03\u7F6E\u5927\u6279\u91CF\u4EFB\u52A1\u524D\u5148\u544A\u77E5\u7528\u6237\u6B64\u9650\u5236\uFF0C\u5E76\u4E3B\u52A8\u5EFA\u8BAE\u62C6\u6279\uFF09\u3002",
+    description:
+      "采集一篇笔记/视频的详情数据（正文、标签、互动数据、作者信息等）。适合：爆款拆解、单篇深度分析。需提供笔记 URL。安全限额：单批最多 20 篇、30 分钟内累计最多 100 篇（为保障账号安全，超限请求会被自动拒绝并返回可读错误——请在布置大批量任务前先告知用户此限制，并主动建议拆批）。",
     inputSchema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "\u7B14\u8BB0/\u89C6\u9891 URL" }
+        url: { type: "string", description: "笔记/视频 URL" },
       },
       required: ["url"],
-      additionalProperties: false
-    }
+      additionalProperties: false,
+    },
   },
   {
     name: "leadsradar_download_media",
-    description: "\u4E0B\u8F7D\u4E00\u7BC7\u7B14\u8BB0/\u89C6\u9891\u7684\u65E0\u6C34\u5370\u7D20\u6750\u5230\u7528\u6237\u7684\u6D4F\u89C8\u5668\u4E0B\u8F7D\u76EE\u5F55\uFF08\u4E0E\u63D2\u4EF6\u300C\u4E0B\u8F7D\u7D20\u6750\u300D\u6309\u94AE\u540C\u6E90\u540C\u94FE\uFF0C\u5B8C\u5168\u514D\u8D39\u3001\u4E0D\u5360\u4F1A\u5458\u6743\u76CA\u3001\u4E0E\u300C\u63D0\u53D6\u6587\u6848\u300D\u65E0\u5173\uFF09\u3002\u89C6\u9891=MP4+\u5C01\u9762\u56FE\uFF0C\u56FE\u6587=\u56FE\u96C6\u56FE\u7247\uFF0C\u7EDF\u4E00\u843D\u5728\u6D4F\u89C8\u5668\u4E0B\u8F7D\u76EE\u5F55\u7684\u72EC\u7ACB\u5B50\u6587\u4EF6\u5939\u3002\u9002\u5408\uFF1A\u7528\u6237\u8981\u62FF\u539F\u7D20\u6750\u505A\u4E8C\u6B21\u521B\u4F5C/\u526A\u8F91\u3002\u53C2\u6570 note \u4F20\u91C7\u96C6\u5DE5\u5177\u8FD4\u56DE\u7684\u7B14\u8BB0\u5BF9\u8C61\uFF08\u6216\u76F4\u63A5\u7ED9 url\uFF09\u3002\u6CE8\u610F\uFF1A\u4E0B\u8F7D\u4F1A\u540E\u53F0\u8BBF\u95EE\u4E00\u6B21\u4F5C\u54C1\u9875\u5237\u65B0\u5730\u5740\uFF0C\u5360\u7528\u4E00\u6B21\u91C7\u96C6\u9650\u989D\uFF1B\u94FE\u63A5\u7B7E\u540D\u6709\u65F6\u6548\uFF0C\u8BF7\u52FF\u7F13\u5B58\u7ED3\u679C\u6279\u91CF\u91CD\u8BD5\u3002",
+    description:
+      "下载一篇笔记/视频的无水印素材到用户的浏览器下载目录（与插件「下载素材」按钮同源同链，完全免费、不占会员权益、与「提取文案」无关）。视频=MP4+封面图，图文=图集图片，统一落在浏览器下载目录的独立子文件夹。适合：用户要拿原素材做二次创作/剪辑。参数 note 传采集工具返回的笔记对象（或直接给 url）。注意：下载会后台访问一次作品页刷新地址，占用一次采集限额；链接签名有时效，请勿缓存结果批量重试。",
     inputSchema: {
       type: "object",
       properties: {
-        note: { type: "object", description: "\u91C7\u96C6\u7ED3\u679C\u4E2D\u7684\u7B14\u8BB0\u5BF9\u8C61\uFF08\u539F\u6837\u4F20\u56DE\uFF0C\u4F18\u5148\u7528\u5B83\u7684 note_url/platform/\u5C01\u9762\uFF09" },
-        url: { type: "string", description: "\u7B14\u8BB0/\u89C6\u9891 URL\uFF08\u672A\u4F20 note \u65F6\u5FC5\u586B\uFF09" }
+        note: { type: "object", description: "采集结果中的笔记对象（原样传回，优先用它的 note_url/platform/封面）" },
+        url: { type: "string", description: "笔记/视频 URL（未传 note 时必填）" },
       },
-      additionalProperties: false
-    }
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "leadsradar_extract_text",
+    description:
+      "提取一篇笔记/视频的文案（与插件「提取文案」按钮同源同链）：视频=云端语音转文字逐字稿（ASR），图文=图片 OCR。适合：抠口播文案、文案拆解、仿写改写。参数传 note 对象（按 work_type 自动分流视频/图文）或直接给 url（默认按视频处理）。需登录、占「文案提取」额度（体验版 1 次/天、付费按月——与采集限额独立两本账）；云端转录约 15~60 秒有进度提示。未登录返回 LOGIN_REQUIRED 并附登录指引（原话转述给用户）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        note: { type: "object", description: "采集结果中的笔记对象（原样传回，用它的 work_type/note_url/标题）" },
+        url: { type: "string", description: "笔记/视频 URL（未传 note 时必填）" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "leadsradar_note_deep_research",
+    description:
+      "深度拆解一篇作品（与插件「深度拆解」按钮同源同引擎，单篇深度拆解有且只有这一种）：自动补齐作品详情/文案/评论后跑云端 AI 深度分析（L2 级），产出线索漏斗（🟢A3强/🟠A3弱/🟡A2/⚪A1 四级分级）、线索指数评分、最该做的事。计费：本地已有该作品的拆解报告时直接免费解读（不扣券）；没有才发起云端分析（扣 1 张拆解券，约 1~3 分钟），force=true 强制重拆（会再扣券）。需登录——未登录返回 LOGIN_REQUIRED，请把错误中的登录指引原话转述给用户。返回 pending=true 表示云端仍在分析（券已扣、不会重复计费）——请引导用户稍等一两分钟后说「栗子报告」即可拿到完整报告。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        note: { type: "object", description: "采集结果中的笔记对象（原样传回，用它的 note_url/标题）" },
+        url: { type: "string", description: "笔记/视频 URL（未传 note 时必填）" },
+        force: { type: "boolean", description: "true=跳过本地已有报告强制重新拆解（再扣 1 张券）；默认 false 已有报告先免费解读" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "leadsradar_track_deep_research",
+    description:
+      "赛道深度研究（与插件赛道页「赛道深度研究」按钮同源同引擎，赛道级深度研究有且只有这一种）：自动搜索关键词→采 80 条作品列表 + Top20 深采（逐条详情+评论）→云端 AI 生成三段式报告（赛道诊断：值不值得做/市场阶段/变现潜力/进入难度；需求洞察：内容缺口；策略对标：六策略+对标账号）。计费：非会员首次限免 1 次，之后 8 积分/次；需登录——LOGIN_REQUIRED/积分不足 QUOTA_EXCEEDED 会提前返回不白等。无缓存时全程 15-30 分钟：启动采集后立即返回 pending 回执（不阻塞对话），完成后对用户说「栗子报告」拿报告摘要+直达链接；1 天内同关键词自动复用采集缓存（跳过采集直接 AI，约 2-6 分钟）。⭐扫描量可调（R96bv）：默认采 80 条列表+Top20 深采，用户主动指定扫描量/深采量/评论量时才透传 sample_count（20-120）/top_deep（5-30）/comment_limit（10-100），超范围引擎自动夹回边界——回执 message 带实际生效参数，pending 转达照抄即可。调用纪律：先 query_local_data(source=\"reports\", keyword=关键词) 查已有赛道报告——有就免费解读，不要重复生成；force=true 忽略缓存强制重采（会再扣积分）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        keyword: { type: "string", description: "赛道关键词（如「辅食」「亲子露营」）" },
+        platform: { type: "string", enum: ["xiaohongshu", "douyin"], description: "平台（默认 xiaohongshu 小红书）" },
+        force: { type: "boolean", description: "true=忽略 1 天内采集缓存强制重采；默认 false 缓存命中直接 AI" },
+        sample_count: { type: "integer", description: "列表采样条数（20-120，默认 80）——用户主动要求多扫/少扫时透传，默认不传" },
+        top_deep: { type: "integer", description: "深采条数（5-30，默认 20）——用户指定深采几条时透传，默认不传" },
+        comment_limit: { type: "integer", description: "每篇评论上限（10-100，默认 20）——用户指定评论采多少时透传，默认不传" },
+      },
+      required: ["keyword"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "leadsradar_account_deep_research",
+    description:
+      "账号深度研究（与插件账号页「账号深度研究」按钮同源同引擎，账号级深度研究有且只有这一种）：本地素材足够（≥10 条作品且 8 条有正文）直接 AI 分析（约 2-6 分钟）；不足自动先深采 20 条作品（详情+评论，占采集额度）再分析（约 6-25 分钟）→云端生成报告：账号定位（IP 主线：定位/受众分层/变现模式）、内容支柱（3-5 根+各自 A3 率）、人群画像、打法拆解、获客建议。计费：非会员首次限免、之后按积分计（job 创建即扣）；需登录——LOGIN_REQUIRED/积分不足 QUOTA_EXCEEDED 提前返回。启动后立即返回 pending 回执（不阻塞对话），完成后对用户说「栗子报告」拿报告摘要+直达链接。调用纪律：先 query_local_data(source=\"reports\", keyword=账号名) 查已有账号研究报告（type=account）——有就免费解读，不要重复生成。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "博主主页链接（小红书 /user/profile/ 或抖音 /user/）" },
+        platform: { type: "string", enum: ["xiaohongshu", "douyin"], description: "平台（默认按链接自动识别）" },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
   },
   {
     name: "leadsradar_save_topic",
-    description: "\u628A\u4E00\u7BC7\u91C7\u96C6\u5230\u7684\u7B14\u8BB0\u5B58\u5165\u7528\u6237\u7684\u9009\u9898\u4ED3\u5E93\uFF08\u4E91\u7AEF\u5165\u5E93\u5F85\u5206\u62E3\uFF0Cweb \u9009\u9898\u4ED3\u5E93\u4E0E\u63D2\u4EF6\u5DE5\u4F5C\u53F0\u5747\u53EF\u89C1\uFF0C\u4E0E\u63D2\u4EF6\u300C\u5B58\u9009\u9898\u300D\u540C\u6E90\uFF09\u3002\u9002\u5408\uFF1A\u4F60\u7B5B\u9009\u51FA\u503C\u5F97\u521B\u4F5C\u8DDF\u8FDB\u7684\u7206\u6B3E/\u7EBF\u7D22\u7B14\u8BB0\u65F6\u843D\u5E93\u5B58\u6863\u3002\u53C2\u6570 note \u76F4\u63A5\u4F20\u91C7\u96C6\u5DE5\u5177\uFF08search_notes / capture_profile / note_detail\uFF09\u8FD4\u56DE\u7684\u7B14\u8BB0\u5BF9\u8C61\uFF0C\u539F\u6837\u4F20\u56DE\u5373\u53EF\u3002\u6CE8\u610F\uFF1A\u6B64\u64CD\u4F5C\u9700\u8981\u7528\u6237\u5DF2\u767B\u5F55\u2014\u2014\u672A\u767B\u5F55\u65F6\u4F1A\u8FD4\u56DE LOGIN_REQUIRED \u9519\u8BEF\uFF0C\u8BF7\u628A\u9519\u8BEF\u4E2D\u7684\u767B\u5F55\u6307\u5F15\u539F\u6837\u8F6C\u8FF0\u7ED9\u7528\u6237\uFF0C\u767B\u5F55\u540E\u91CD\u8BD5\u5373\u53EF\u3002\u53EA\u5199\u4E00\u6B21\u5E93\u3001\u4E0D\u5360\u91C7\u96C6\u9650\u989D\u3002",
+    description:
+      "把一篇采集到的笔记存入用户的选题仓库（云端入库待分拣，web 选题仓库与插件工作台均可见，与插件「存选题」同源）。适合：你筛选出值得创作跟进的爆款/线索笔记时落库存档。参数 note 直接传采集工具（search_notes / capture_profile / note_detail）返回的笔记对象，原样传回即可。注意：此操作需要用户已登录——未登录时会返回 LOGIN_REQUIRED 错误，请把错误中的登录指引原样转述给用户，登录后重试即可。只写一次库、不占采集限额。回执带 topic_total（云端选题仓库当前总条数，服务端真源）与 topic_url（选题卡直达链接）——核对仓库总量直读 topic_total，勿用本地 works 反查充当仓库计数。",
     inputSchema: {
       type: "object",
       properties: {
-        note: { type: "object", description: "\u91C7\u96C6\u7ED3\u679C\u4E2D\u7684\u7B14\u8BB0\u5BF9\u8C61\uFF08\u539F\u6837\u4F20\u56DE\uFF0C\u987B\u542B title \u5B57\u6BB5\uFF09" },
-        remark: { type: "string", description: "\u53EF\u9009\uFF1A\u5B58\u5165\u539F\u56E0\u5907\u6CE8\uFF08\u5982\u300C\u8BC4\u8BBA\u7559\u8D44\u591A\uFF0C\u9002\u5408\u8DDF\u62CD\u300D\uFF09" }
+        note: { type: "object", description: "采集结果中的笔记对象（原样传回，须含 title 字段）" },
+        remark: { type: "string", description: "可选：存入原因备注（如「评论留资多，适合跟拍」）" },
       },
       required: ["note"],
-      additionalProperties: false
-    }
+      additionalProperties: false,
+    },
   },
   {
     name: "leadsradar_add_monitor",
-    description: "\u628A\u4E00\u4E2A\u5BF9\u6807\u8D26\u53F7\u52A0\u5165\u5BF9\u6807\u5E93\u5E76\u5F00\u542F\u76D1\u63A7\uFF08\u4E0E\u63D2\u4EF6\u300C\u7EB3\u5165\u76D1\u63A7\u300D\u540C\u6E90\uFF1A\u672C\u673A\u76D1\u63A7\u8868 + \u4E91\u7AEF\u76EE\u6807\u8868 + web \u9009\u624B\u8868\uFF09\u3002\u53C2\u6570 url=\u535A\u4E3B\u4E3B\u9875\u94FE\u63A5\uFF08\u8D26\u53F7\u987B\u5148\u7528 leadsradar_capture_profile \u91C7\u96C6\u8FC7\uFF0C\u672A\u91C7\u96C6\u4F1A\u8FD4\u56DE ACCOUNT_NOT_COLLECTED \u53CA\u6307\u5F15\uFF09\u3002monitor \u542B\u4E49\uFF1A\u7528\u6237\u8BF4\u300C\u76D1\u63A7/\u76EF\u7740\u300D\u65F6\u4F20 true\uFF08\u52A0\u5BF9\u6807\u4E14\u5F00\u76D1\u63A7\uFF0C\u9700\u767B\u5F55\uFF0C\u4E91\u7AEF\u76D1\u63A7\u4E3A\u4F1A\u5458\u6743\u76CA\u4F46\u672C\u673A\u76D1\u63A7\u7167\u5F00\u4E0D\u963B\u65AD\uFF09\uFF1B\u53EA\u8BF4\u300C\u52A0\u5BF9\u6807\u300D\u4F20 false\uFF08\u514D\u767B\u5F55\u5E42\u7B49\uFF09\u3002\u63D0\u793A\uFF1A\u76D1\u63A7\u547D\u4E2D\u4E0E\u5DE1\u903B\u62A5\u544A\u5728\u63D2\u4EF6\u76D1\u63A7\u9875 / web \u5DE5\u4F5C\u53F0\u67E5\u770B\u3002",
+    description:
+      "把一个对标账号加入对标库并开启监控（与插件「纳入监控」同源）。参数 url=博主主页链接（账号须先用 leadsradar_capture_profile 采集过，未采集会返回 ACCOUNT_NOT_COLLECTED 及指引）。monitor 含义：用户说「监控/盯着」时传 true（加对标且开监控，需登录；云端 24h 盯盘为会员权益，未激活时在插件监控页点亮该账号胶囊可激活）；只说「加对标」传 false（免登录幂等）。提示：监控命中与报告在插件监控页 / web 工作台查看。",
     inputSchema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "\u535A\u4E3B\u4E3B\u9875\u94FE\u63A5\uFF08capture_profile \u7528\u8FC7\u7684\u540C\u4E00\u6761\uFF09" },
-        monitor: { type: "boolean", description: "true=\u52A0\u5BF9\u6807\u4E14\u5F00\u76D1\u63A7\uFF08\u9700\u767B\u5F55\uFF09\uFF1Bfalse/\u4E0D\u4F20=\u53EA\u786E\u8BA4\u5BF9\u6807\u5E93\u6210\u5458\uFF08\u514D\u767B\u5F55\uFF09\u3002\u7528\u6237\u63D0\u5230\u300C\u76D1\u63A7\u300D\u5373 true" }
+        url: { type: "string", description: "博主主页链接（capture_profile 用过的同一条）" },
+        monitor: { type: "boolean", description: "true=加对标且开监控（需登录）；false/不传=只确认对标库成员（免登录）。用户提到「监控」即 true" },
       },
       required: ["url"],
-      additionalProperties: false
-    }
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "leadsradar_remove_benchmark",
+    description:
+      "「栗子删对标」：从对标库删除一个对标账号腾出对标位（与插件监控页卡片删除同源，三处同删：本地对标库+云端目标表+本机监控连带停止）。⚠️ 破坏性操作必须先确认：调用前把要删的账号报给用户确认一句（账号名+平台+粉丝数+是否监控中），用户确认后才调——用户指令里已点名且语义明确也不跳过确认；批量删除逐个确认逐个删。回执 message 照抄（含对标位 N/M 与云端删除说明）；返回 ACCOUNT_NOT_FOUND 时先 leadsradar_query_local_data(source=\"accounts\") 查对标库核对准确账号名再重试。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "博主主页链接（优先，精确匹配）" },
+        name: { type: "string", description: "账号名（无链接时用；重名时须带 platform 消歧）" },
+        platform: { type: "string", description: "平台（xiaohongshu/douyin，重名账号消歧用）" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "leadsradar_pause_monitor",
+    description:
+      "「栗子关监控/取消监控」：关掉一个账号的云端监控（status→paused，与插件监控页开关「监控深→未监控」同源）。只停监控不删对标——账号保留在对标库，本机扫描不受影响；含「我的账号」（is_self 自带监控也能关）。需已登录（未登录返回 LOGIN_REQUIRED，引导用户对栗子说「栗子登录」）。参数 url 或 name 至少其一（重名带 platform 消歧）。回执 message 照抄；返回 TARGET_NOT_FOUND 说明该账号本来就没开监控（如实告知用户，不要重试）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "博主主页链接（优先，精确匹配）" },
+        name: { type: "string", description: "账号名（无链接时用；重名时须带 platform 消歧）" },
+        platform: { type: "string", description: "平台（xiaohongshu/douyin，重名账号消歧用）" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    // ⭐R96dq 「栗子扫描设置」开窗：对话直接改扫描规则，与插件监控页「扫描规则」同份 local_scan_settings
+    // ⭐R96dt 升级「扫描/监控设置」：称呼全端统一（首扫→首次扫描/复扫→新增扫描/深扫评论→评论采集）+注册「栗子监控设置」触发词
+    // ⭐R96dv 命中判定规则开窗（用户拍板「命中规则还有两条数据，也要可修改」）：hitMode/hitValue/observeHours 三参（语义两条：命中条件+观察期），与插件「命中观察规则」同源 PUT；⭐R96dw 语义校正：命中条件对两端生效、观察期仅云端监控生效（web runner 唯一消费点），需登录
+    name: "leadsradar_scan_settings",
+    description:
+      "「栗子扫描设置/栗子监控设置」：查看或修改扫描/监控设置（与插件监控页「扫描/监控设置」同份设置，对标账号/我的账号的本机扫描与栗子扫对标现扫深扫同份生效；已登录时回执附带命中条件/观察期/云端监控频率/起扫时间回显，频率/时间只读指路 web 端雷达页）。不传任何参数=查看当前设置；传哪个参数改哪项（其余保持现值）：first 首次扫描条数 20-500（首次扫描一次干满建池）、rescan 新增扫描条数 5-20（新增扫描只追新绝不重扫已扫作品）、deepComments 评论采集开关（默认开）、deepCommentLimit 每条作品评论采集上限 10-100、hitMode 命中条件模式 dynamic=均赞×N（点赞≥该账号近期均赞×N）/follower=粉丝×N（点赞≥粉丝数×N）/fixed=固定赞（点赞≥固定值 N）、hitValue 命中条件阈值（均赞×/粉丝× 0.1-10，固定赞 ≥1 整数，不传沿用当前值）、observeHours 新作品观察期 1-168 小时（云端监控观察窗：新作品窗内跟踪判命中、超窗未命中转观察完成——仅云端监控生效，本机扫描不吃）。命中条件+观察期=命中判定规则，与插件监控页「命中观察规则」同源（命中条件对两端生效：本机扫描上报+云端自动扫描同一池；观察期仅云端监控生效——⭐R96dw 代码实查语义校正），修改需已登录（未登录回 LOGIN_REQUIRED）。越界值自动夹到边界；回执 message 照抄（含改前→改后对照）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        first: { type: "number", description: "首次扫描条数（20-500，默认 50；首次扫描一次干满建池）" },
+        rescan: { type: "number", description: "新增扫描条数（5-20，默认 10；新增扫描只追新）" },
+        deepComments: { type: "boolean", description: "评论采集开关（默认开）" },
+        deepCommentLimit: { type: "number", description: "每条作品评论采集上限（10-100，默认 30）" },
+        hitMode: { type: "string", enum: ["dynamic", "follower", "fixed"], description: "命中条件模式（dynamic=均赞×N：点赞≥该账号近期均赞×N / follower=粉丝×N：点赞≥粉丝数×N / fixed=固定赞：点赞≥固定值 N；与插件监控页「命中观察规则」同源，对两端生效，需登录）" },
+        hitValue: { type: "number", description: "命中条件阈值（均赞×/粉丝×：0.1-10；固定赞：≥1 整数；不传沿用当前值）" },
+        observeHours: { type: "number", description: "新作品观察期（1-168 小时，默认 72；云端监控观察窗：窗内跟踪判命中、超窗未命中转观察完成——仅云端监控生效，本机扫描不吃）" },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "leadsradar_pair_login",
-    description: "\u300C\u6817\u5B50\u767B\u5F55\u300D\uFF1A\u5E2E\u7528\u6237\u5B8C\u6210\u63D2\u4EF6\u4E0E\u8D26\u53F7\u7684\u767B\u5F55\u8FDE\u63A5\u2014\u2014\u81EA\u52A8\u6253\u5F00\u7F51\u9875\u767B\u5F55\u9875\uFF08app.leadsradar.cn\uFF0C\u626B\u7801\u6216\u8D26\u5BC6\u767B\u5F55\uFF09\uFF0C\u767B\u5F55\u6210\u529F\u540E\u81EA\u52A8\u8FDE\u63A5\u63D2\u4EF6\uFF08JWT \u81EA\u52A8\u56DE\u6D41\uFF0C\u65E0\u9700\u624B\u6284\u914D\u5BF9\u7801\uFF09\uFF0C\u8FD4\u56DE\u767B\u5F55\u8EAB\u4EFD\uFF08\u4F1A\u5458\u6863\u4F4D/\u90AE\u7BB1/\u79EF\u5206\uFF09\u3002\u5DF2\u767B\u5F55\u65F6\u5E42\u7B49\u8FD4\u56DE\u5F53\u524D\u8EAB\u4EFD\u3002\u6CE8\u610F\uFF1A\u8FD9\u662F\u4E00\u4E2A\u6700\u957F\u7B49 5 \u5206\u949F\u7684\u957F\u4EFB\u52A1\uFF08\u7B49\u7528\u6237\u5728\u7F51\u9875\u4E0A\u6162\u6162\u767B\u5F55\uFF09\uFF0C\u671F\u95F4\u4F1A\u6709\u8FDB\u5EA6\u63D0\u793A\uFF1B\u7528\u6237\u6CA1\u767B\u5F55\u5B8C\u5C31\u8D85\u65F6\u7684\u8BDD\uFF0C\u628A\u8FD4\u56DE\u91CC\u7684\u94FE\u63A5\u7ED9\u7528\u6237\u2014\u2014\u4E4B\u540E\u4EFB\u610F\u65F6\u95F4\u767B\u5F55\u90FD\u4F1A\u81EA\u52A8\u8FDE\u63A5\u3002\u4ED8\u6B3E/\u5F00\u901A\u4F1A\u5458\u4E0D\u8D70\u672C\u5DE5\u5177\uFF1A\u76F4\u63A5\u7ED9\u7528\u6237\u4F1A\u5458\u9875\u94FE\u63A5 app.leadsradar.cn/membership\uFF08\u5DF2\u767B\u5F55\u6001\u70B9\u5F00\u652F\u4ED8\uFF09\u3002",
+    description:
+      "「栗子登录」：帮用户完成插件与账号的登录连接——自动打开网页登录页（app.leadsradar.cn，扫码或账密登录），登录成功后自动连接插件（JWT 自动回流，无需手抄配对码），返回登录身份（会员档位/邮箱/积分）。已登录时幂等返回当前身份。注意：这是一个最长等 5 分钟的长任务（等用户在网页上慢慢登录），期间会有进度提示；用户没登录完就超时的话，把返回里的链接给用户——之后任意时间登录都会自动连接。付款/开通会员不走本工具：直接给用户会员页链接 app.leadsradar.cn/membership（已登录态点开支付）。",
     inputSchema: {
       type: "object",
       properties: {},
-      additionalProperties: false
-    }
+      additionalProperties: false,
+    },
   },
   {
     name: "leadsradar_get_daily_report",
-    description: "\u53D6\u83B7\u5BA2\u65E5\u62A5\uFF08\u6BCF\u5929\u81EA\u52A8\u751F\u6210\u7684\u6628\u65E5\u83B7\u5BA2\u7B80\u8BAF\uFF0C\u9700\u5DF2\u767B\u5F55\uFF09\uFF1A\u4E94\u6BB5\u5168\u91CF\u8FD4\u56DE\u2014\u2014hotHits \u7206\u6587\u547D\u4E2D / a3Strong A3 \u5F3A\u610F\u5411\u5BA2\u6237 / system \u7CFB\u7EDF\u62A5\u544A / radarRank \u96F7\u8FBE\u699C / report \u65B0\u62A5\u544A\uFF0C\u6BCF\u6BB5\u5E26\u6761\u76EE\u6570\u7EC4\uFF0C\u5BBF\u4E3B\u53EF\u76F4\u63A5\u5B8C\u6574\u6E32\u67D3\u7ED9\u7528\u6237\uFF08\u6B64\u6570\u636E\u4E0D\u6D89\u5BC6\uFF09\u3002\u8FD1 7 \u5929\u6CA1\u6709\u65E5\u62A5\u65F6\u8FD4\u56DE\u7A7A\u5E76\u8BF4\u660E\u539F\u56E0\uFF08\u9700\u8981\u76D1\u63A7\u8D26\u53F7\u5F53\u5929\u6709\u6570\u636E\uFF09\u3002\u672A\u767B\u5F55\u65F6\u5F15\u5BFC\u5148\u300C\u6817\u5B50\u767B\u5F55\u300D\u3002",
+    description:
+      "取获客日报（每天自动生成的昨日获客简讯，需已登录）：五段全量返回——hotHits 爆文命中 / a3Strong A3 强意向客户 / system 系统报告 / radarRank 雷达榜 / report 新报告，每段带条目数组（此数据不涉密）。⭐R96gp 渲染归口：日报类指令（栗子日报/今天的日报/获客日报/昨天有什么线索）一律由管家栗（leadsradar-helper SKILL）承接，按其五件套骨架渲染（📰 报头徽章行+--- 段间分隔+🔴最新线索/🔥爆款榜单/🎯对标命中/⚙️系统信息 段首锚点+关键数字加粗+报尾日期戳，云端报/纯活动简报/空日报三形态同款骨架）——情报栗等其他栗接到日报类指令一律转派管家栗，禁自己调本工具自由发挥格式。近 7 天没有日报时返回空并说明原因（需要监控账号当天有数据）。未登录时引导先「栗子登录」。",
     inputSchema: {
       type: "object",
       properties: {},
-      additionalProperties: false
-    }
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "leadsradar_dm_reply",
+    description:
+      "AI 私信话术（成交栗触达包私信段）：为指定评论生成 3 条可直接发的私信候选（first 首触/followup 追问）。与插件评论弹窗「AI 私信」同源同引擎（云端 AI 生成+lf_leads 自动建档+aiReply 会员日限）。已登录用；未登录返回 LOGIN_REQUIRED 引导「栗子登录」，用户不想登录时按触达包格式自写话术降级交付。评论者主页 URL 在采集回执 author_url 字段（触达包每条带上）——用户确认成稿后用 leadsradar_send_dm 一键代发。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        comment_text: { type: "string", description: "评论原文（必填——私信要贴着对方评论写）" },
+        stage: { type: "string", enum: ["first", "followup"], description: "first=首触（默认）/followup=追问（对方未回复时换角度再触达）" },
+        commenter_name: { type: "string", description: "评论者昵称（建档用，选填）" },
+        note_title: { type: "string", description: "笔记标题（建档用，选填）" },
+        platform: { type: "string", enum: ["xiaohongshu", "douyin"], description: "平台（默认 xiaohongshu）" },
+        intent_level: { type: "string", enum: ["A3_strong", "A3_weak", "A2"], description: "意向档位（默认 A3）" },
+        lead_id: { type: "string", description: "已有线索 ID（⭐233 fallback 自动建档时二触以上传，免重复建）" },
+      },
+      required: ["comment_text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "leadsradar_comment_reply",
+    description:
+      "AI 回评话术（成交栗回评段，⭐R96dr 开窗）：为指定评论生成 3 条可直接发的评论区回复候选。与插件评论弹窗「AI 回复」同源同引擎（云端 AI 生成，贴评论原文+意向档位写语气，aiReply 会员日限同池）。已登录用；未登录返回 LOGIN_REQUIRED 引导「栗子登录」，日限用完(429)按回评包格式自写话术降级交付（标注「自写版·未走探栗意向引擎」）。确认制流程：先生成给用户选，用户确认发出后用 leadsradar_send_reply 一键代发（或 leadsradar_mark_lead 标已回落档）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        comment_text: { type: "string", description: "评论原文（必填——回评要贴着对方评论写）" },
+        note_title: { type: "string", description: "笔记标题（AI 上下文，选填）" },
+        commenter_name: { type: "string", description: "评论者昵称（选填）" },
+        intent_level: { type: "string", enum: ["A3_strong", "A3_weak", "A2", "A1"], description: "意向档位（A3 系=客户语气/A2=潜在/默认 A1 噪音档兜底语气）" },
+      },
+      required: ["comment_text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    // ⭐R96g1af 评论能力迁移 WorkBuddy（任务2·插件调用版一键代发）：复用 R96g1ae 已实测双平台回评引擎
+    //   （开作品页→定位目标评论楼→注入→发送→页面核验）——「探栗插件引擎不代发」红线退役
+    name: "leadsradar_send_reply",
+    description:
+      "回评一键代发（⭐R96g1af 插件引擎版）：把一条用户已确认的回评成稿由插件引擎发到目标评论楼下——自动开作品页→定位该评论→贴入成稿→发送→页面核验「这条回复真实出现」，核验通过才算发出（先核后标），并自动记账 lf_leads（标已回+留痕话术，回执带 lead_id）。只发用户确认过的成稿（一字不改）；一次调用=发一条，批内下一条间隔 8-40 秒按稿长（⭐R96g1am 模拟真人打字节奏：30 字稿≈19s、60 字≈29s、80 字+封顶 40s——回评=博主在自己作品下互动，平台鼓励、风控判内容不判频率；节奏由你控制，工具不管批间等待，批间 1 分钟象征性分段）。⭐R96g1ao 防误发双闸：①评论条目有 id/comment_id 时必传 comment_id（小红书 id 精确命中+昵称硬闸——同质评论如全「多少钱」只靠文本会撞车错发；抖音 DOM 无 id 自动忽略）；②回执含 matched_commenter/matched_comment_text（实际定位到的评论作者+内容）——每条发完必须与名单客户核对，不一致=误发，立即停手告知用户并如实标注跟进卡。⭐R96gl 防错位连发（261103 实报 3 连误发刷屏的根修）：调用参数（commenter_name/comment_text/comment_id/lead_id）必须从确认单行逐字复制，禁发送时重新捞库按序号取行重组——确认单所见=引擎所发；回执到达立即核对（禁攒批末）。错误口径：REPLY_INPUT_TIMEOUT/TARGET_COMMENT_NOT_FOUND 可原样重试 1 次；UNCERTAIN_AFTER_SEND=已提交未核到，禁自动重发（人工核对页面，已发出就别再发）；DUPLICATE_REPLY=引擎防重复触达拦截（同评论 10 分钟内已发过/该楼下已有同文本回复——疑似重复调用或参数错位，先与用户核对禁绕过）；BUSY=该条正在发送中勿重复调。与插件评论弹窗「发送」按钮同源同引擎（小红书/抖音双平台）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        note_url: { type: "string", description: "作品链接（必填——回评挂在这篇作品下）" },
+        commenter_name: { type: "string", description: "客户昵称（必填——定位目标评论楼）" },
+        comment_text: { type: "string", description: "对方评论原文（必填——定位目标评论+记账自动建档用）" },
+        reply_text: { type: "string", description: "用户确认过的回评成稿（必填——一字不改原样发出）" },
+        comment_id: { type: "string", description: "评论条目 ID（⭐R96g1ao 强烈建议：采集数据评论条目有 id/comment_id/platform_comment_id 字段就必传——小红书精确命中防同质评论撞车；抖音自动忽略）" },
+        author_id: { type: "string", description: "评论者用户 ID（⭐R96g1ba 强烈建议：采集条目有 author_id/user_id 字段就传——小红书 uid 精确匹配通道（昵称 data-user-id 比对），与 comment_id 双保险防同质评论撞车错发、提升千条级深楼定位命中率；抖音自动忽略）" },
+        platform: { type: "string", enum: ["xiaohongshu", "douyin"], description: "平台（默认按 note_url 自动识别）" },
+        note_title: { type: "string", description: "笔记标题（记账建档用，选填）" },
+        intent_level: { type: "string", enum: ["A3_strong", "A3_weak", "A2"], description: "意向档位（记账建档用，选填）" },
+        lead_id: { type: "string", description: "已有线索 ID（记账免重复建档，选填；无则按评论原文自动建档）" },
+      },
+      required: ["note_url", "commenter_name", "comment_text", "reply_text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    // ⭐R96g1af 私信一键代发：复用 R96g1ae 已实测双平台私信引擎（XHS openUid 直达会话页/DY 主页私信钮
+    //   → 注入→Enter 发送→会话核验）——双平台各真发一条「你好」验证过
+    name: "leadsradar_send_dm",
+    description:
+      "私信一键代发（⭐R96g1af 插件引擎版）：把一条用户已确认的私信成稿由插件引擎发给评论者——自动打开与该用户的私信会话（小红书直达会话页/抖音主页私信面板）→贴入成稿→发送→核验「会话里真实出现这条消息」，核验通过才算发出（先核后标），并自动记账 lf_leads（标已回+留痕话术，回执带 lead_id）。只发用户确认过的成稿（一字不改）；一次调用=发一条，批内下一条间隔 45-90 秒（⭐R96g1am MC v0.4.0 OUTREACH_POLICY 同款实证；节奏由你控制，批间 1 分钟象征性分段，私信日 ≤80 人）。错误口径：UNCERTAIN_AFTER_SEND=已提交未核到，禁自动重发（私信重复发最伤号，人工核对会话页，已发出就别再发）；DUPLICATE_REPLY=引擎防重复触达拦截（该用户 10 分钟内已发过私信——疑似重复调用，先与用户核对禁绕过）；BUSY=该用户私信正在发送中勿重复调。与插件评论弹窗「私信」一键代发同源同引擎（小红书/抖音双平台，261102 实测交付）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        author_url: { type: "string", description: "评论者主页链接（必填——取采集回执评论条目的 author_url 字段）" },
+        dm_text: { type: "string", description: "用户确认过的私信成稿（必填——一字不改原样发出）" },
+        author_name: { type: "string", description: "评论者昵称（选填——小红书侧校验会话对象用，建议带上）" },
+        platform: { type: "string", enum: ["xiaohongshu", "douyin"], description: "平台（默认按 author_url 自动识别）" },
+        comment_text: { type: "string", description: "对方评论原文（记账自动建档用，选填）" },
+        note_title: { type: "string", description: "笔记标题（记账建档用，选填）" },
+        intent_level: { type: "string", enum: ["A3_strong", "A3_weak", "A2"], description: "意向档位（记账建档用，选填）" },
+        lead_id: { type: "string", description: "已有线索 ID（记账免重复建档，选填；无则按评论原文自动建档）" },
+      },
+      required: ["author_url", "dm_text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    // ⭐R96g1ah 五问批 Q1：栗子触达设置 Agent 化（用户原话「关键词要不就叫栗子触达设置」）——
+    //   对话宿主查/改全局触达设置，与插件 options「触达设置」页完全同源（改完插件端生成立即生效）
+    name: "leadsradar_touch_settings",
+    description:
+      "栗子触达设置：查看/修改全局触达话术设置（手动固定回评稿/固定私信稿、AI 生成要求、AI 字数、成交文档/人设档案开关）。用户说「栗子触达设置」「触达设置」「改回评话术设置」「固定回评稿改成…」时用；生成话术前也建议先 get 看一眼手动稿与 AI 要求现状（手动稿已设时要先问用户本次用固定稿还是 AI 生成）。get 呈现按回评/私信拆两张表（⭐R96g1an：【回评设置】+【私信设置】各自独立；⭐R96g1ao 起成交文档/人设档案按渠道独立进各自表内——回评表显「成交文档注入（回评）/人设档案注入（回评）」、私信表同，不再是公共项）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["get", "set"], description: "get=查看全量（默认）/set=修改（至少传一个要改的字段，其余不动）" },
+        fixed_reply: { type: "string", description: "手动回评稿（批量发送优先用它不扣 AI 额度；空串=清空停用）" },
+        fixed_dm: { type: "string", description: "手动私信稿（空串=清空停用）" },
+        reply_requirements: { type: "string", description: "AI 回评生成附加要求（字数/语气/禁词等一句话，随请求注入 prompt）" },
+        dm_requirements: { type: "string", description: "AI 私信生成附加要求" },
+        reply_length: { type: "string", description: "AI 回评每条字数（10-80 数字串，默认 20；非法自动回落默认）" },
+        dm_length: { type: "string", description: "AI 私信每条字数（10-80 数字串，默认 60；非法自动回落默认）" },
+        use_deal_doc_reply: { type: "boolean", description: "成交文档注入·仅回评生成（⭐R96g1ao 渠道独立，默认 true）" },
+        use_deal_doc_dm: { type: "boolean", description: "成交文档注入·仅私信生成（⭐R96g1ao 渠道独立，默认 true）" },
+        use_persona_doc_reply: { type: "boolean", description: "人设档案注入·仅回评生成（⭐R96g1ao 渠道独立，默认 true）" },
+        use_persona_doc_dm: { type: "boolean", description: "人设档案注入·仅私信生成（⭐R96g1ao 渠道独立，默认 true）" },
+        use_deal_doc: { type: "boolean", description: "（旧名兼容）成交文档注入两渠道同设——新调用请用 use_deal_doc_reply/_dm 分开控制" },
+        use_persona_doc: { type: "boolean", description: "（旧名兼容）人设档案注入两渠道同设——新调用请用 use_persona_doc_reply/_dm 分开控制" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "leadsradar_mark_lead",
+    description:
+      "触达结果标记（⭐R96dr 开窗，拍板③）：把一条线索的跟进状态写回云端 lf_leads 账本（web 线索农场与插件收件箱同源，跨宿主可查）。action=mark_replied 标已回（可带 text 留痕发出的话术；无 lead_id 时带 comment_text 等上下文自动建档）/ mark_converted 已留资 / mark_lost 已流失 / reopen 重开待处理（后三者需 lead_id，先用 leadsradar_lead_records 查）。回评或私信「实际发出后」调用——这是触达闭环的记账动作。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["mark_replied", "mark_converted", "mark_lost", "reopen"], description: "mark_replied=标已回（默认）/mark_converted=已留资/mark_lost=已流失/reopen=重开待处理" },
+        lead_id: { type: "string", description: "线索 ID（mark_replied 可缺省走自动建档；其余动作必填）" },
+        text: { type: "string", description: "mark_replied 留痕：实际发出的回评/私信话术（选填）" },
+        comment_text: { type: "string", description: "无 lead_id 自动建档时必填：评论原文" },
+        commenter_name: { type: "string", description: "自动建档用：评论者昵称（选填）" },
+        note_title: { type: "string", description: "自动建档用：笔记标题（选填）" },
+        platform: { type: "string", enum: ["xiaohongshu", "douyin"], description: "自动建档用：平台（默认 xiaohongshu）" },
+        intent_level: { type: "string", enum: ["A3_strong", "A3_weak", "A2"], description: "自动建档用：意向档位（选填）" },
+      },
+      required: ["action"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "leadsradar_lead_records",
+    description:
+      "查线索账本（⭐R96dr 开窗，拍板②；⭐R96gar 加 source=own，⭐R96gas 更名「栗子我的线索」原「栗子守家」）：云端 lf_leads 线索记录——待处理/已回/已留资/已流失四档统计+明细（评论者/评论内容/意向档/作品/主页链接），按时间倒序（最近操作在前）。同一探栗账号全终端聚合：插件收件箱标的、栗子标记的都在（换宿主/换电脑记录都在）。source=own（栗子我的线索）只看「我的账号」线索（对标账号不进，对齐插件收件箱口径），适合「我的待回应线索/回自己评论区的客户」场景；不传=全量（含对标截流线索）。适合「谁还没回」「触达记录」「未完成任务」类查询。需已登录（未登录返回 LOGIN_REQUIRED 引导「栗子登录」）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: ["new", "contacted", "converted", "lost"], description: "筛选：new=待处理（未完成）/contacted=已回/converted=已留资/lost=已流失；不传=全部" },
+        source: { type: "string", enum: ["own"], description: "⭐R96gas 栗子我的线索（原栗子守家）：传 own 只看「我的账号」线索（对标账号不进）；不传=全量" },
+        limit: { type: "integer", description: "返回条数上限（1-200，默认 50）" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    // ⭐R96ew 平台登录账号现核：closer「回复主体 ⭐已核」数据源（261101 用户两轮实报「回复账号还是
+    //   没检测到 chrome 登录的平台账号」——回执只有名下账号列表，closer 只能列候选反问）。零采集：
+    //   只读已打开的平台页面数据（不滚动不占风控限额）。⭐R96ex 查不到分两分支引导——没开平台页=
+    //   引导先开页面；开了未登录=引导先完成登录（复查核到才出稿，closer 1.4.11 前置阻断闭环配套）；
+    //   部分平台核到时 message 附 missNote 提示未登录平台。⭐R96ey 新增 open_url：没开任何平台页
+    //   时插件自动代开该作品页（前台可见）等 boot 再读一次——用户拍板「读到了插件，但是不能唤起
+    //   网页？」，旧「不自动开 tab」边界退役（依旧零采集：只开页不滚动不抓数据）。
+    name: "leadsradar_whoami",
+    description:
+      "现核当前浏览器登录的小红书/抖音账号（closer 回复任务表「回复主体」行数据源，⭐R96ew 新增、⭐R96ex 升级两分支引导、⭐R96ey 加 open_url 代开）。只读已打开的平台页面数据（零采集：不滚动、不占采集限额）。返回当前登录的平台+昵称；查不到分两种引导（⭐R96ex）：没开平台页→传了 open_url 则插件自动代开该页面再读（未传才引导用户手动开）；开了未登录→message 引导「先在该页面完成登录（右上角能看到自己头像=已登录），登录后再复查」；部分平台核到时 message 附「另：X 页面已开但未检测到登录」。closer 出回评/私信稿前必调（传 open_url=作品链接），核到填「⭐已核 @真昵称」、核不到本步阻断按 message 引导用户、复查核到才出稿（closer 1.4.12 前置阻断闭环）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        open_url: {
+          type: "string",
+          description:
+            "可选——没开任何平台页时让插件自动打开的页面 URL（一般传作品链接，仅接受小红书/抖音域名 https 链接）；传了它「没开页」分支不再让用户手动开页，插件代开后直接读登录态",
+        },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "leadsradar_query_local_data",
-    description: "\u67E5\u8BE2\u63A2\u6817\u63D2\u4EF6\u672C\u5730\u6570\u636E\u5E93\uFF08\u53EA\u8BFB\uFF0C\u4E0D\u8BBF\u95EE\u7F51\u7EDC\u3001\u4E0D\u5360\u91C7\u96C6\u9650\u989D\uFF09\u3002\u9002\u5408\uFF1A\u67E5\u770B/\u7EDF\u8BA1\u5386\u53F2\u91C7\u96C6\u7684\u4F5C\u54C1\u3001\u8D26\u53F7\u3001\u5DF2\u5B58\u9009\u9898\u3001\u67D0\u7BC7\u7B14\u8BB0\u7684\u8BC4\u8BBA\uFF0C\u4EE5\u53CA\u672C\u5730\u7F13\u5B58\u7684 AI \u7814\u7A76\u62A5\u544A\uFF08\u4F5C\u54C1\u62C6\u89E3/\u8D26\u53F7\u7814\u7A76/\u8D5B\u9053\u7814\u7A76/\u8D26\u53F7\u590D\u76D8\uFF09\uFF0C\u751F\u6210\u6570\u636E\u6982\u89C8\u6216\u5DE1\u903B\u62A5\u544A\u3002\u8FD4\u56DE\u6309\u65F6\u95F4\u5012\u5E8F\u7684\u8BB0\u5F55\u5217\u8868\uFF08\u6761\u6570\u4E0A\u9650 200\uFF09\u3002",
+    description:
+      "查询探栗插件本地数据库（只读，不访问网络、不占采集限额）。适合：查看/统计历史采集的作品、账号、已存选题、某篇笔记的评论，以及本地缓存的 AI 研究报告（作品拆解/账号研究/赛道研究/账号复盘），生成数据概览或巡逻报告。返回按时间倒序的记录列表（条数上限 200）。",
     inputSchema: {
       type: "object",
       properties: {
         source: {
           type: "string",
           enum: ["works", "notes", "accounts", "comments", "reports"],
-          description: "\u6570\u636E\u6E90\uFF1Aworks=\u5DF2\u5B58\u9009\u9898\u8BB0\u5F55\uFF0Cnotes=\u5168\u90E8\u91C7\u96C6\u8FC7\u7684\u4F5C\u54C1\uFF0Caccounts=\u91C7\u96C6\u8FC7\u7684\u8D26\u53F7\uFF0Ccomments=\u67D0\u7BC7\u7B14\u8BB0\u7684\u8BC4\u8BBA\uFF08\u987B\u914D note_url\uFF09\uFF0Creports=\u672C\u5730\u7F13\u5B58\u7684 AI \u7814\u7A76\u62A5\u544A\uFF08\u8FD4\u56DE\u7C7B\u578B/\u6807\u9898/\u4E00\u53E5\u8BDD\u5EFA\u8BAE/\u62A5\u544A\u76F4\u8FBE\u94FE\u63A5\uFF0C\u5168\u6587\u5728 web \u7AEF\u6253\u5F00\uFF09"
+          description: "数据源：works=已存选题记录，notes=全部采集过的作品，accounts=采集过的账号，comments=某篇笔记的评论（须配 note_url），reports=本地缓存的 AI 研究报告（返回类型/标题/一句话建议/报告直达链接，全文在 web 端打开；⭐R96bw 不传 keyword=全部报告按时间倒序——「栗子报告」列表口径，配 limit=7 出最近一览）",
         },
-        keyword: { type: "string", description: "\u53EF\u9009\uFF1A\u6A21\u7CCA\u5339\u914D\u6807\u9898/\u4F5C\u8005\u540D/\u6635\u79F0" },
-        platform: { type: "string", enum: ["xiaohongshu", "douyin"], description: "\u53EF\u9009\uFF1A\u6309\u5E73\u53F0\u8FC7\u6EE4" },
-        note_url: { type: "string", description: "source=comments \u65F6\u5FC5\u586B\uFF1A\u76EE\u6807\u7B14\u8BB0 URL" },
-        limit: { type: "integer", description: "\u8FD4\u56DE\u6761\u6570\u4E0A\u9650\uFF081-200\uFF0C\u9ED8\u8BA4 50\uFF09" }
+        keyword: { type: "string", description: "可选：模糊匹配标题/作者名/昵称" },
+        platform: { type: "string", enum: ["xiaohongshu", "douyin"], description: "可选：按平台过滤" },
+        note_url: { type: "string", description: "source=comments 时必填：目标笔记 URL" },
+        limit: { type: "integer", description: "返回条数上限（1-200，默认 50）" },
       },
       required: ["source"],
-      additionalProperties: false
-    }
+      additionalProperties: false,
+    },
   },
   {
     name: "leadsradar_claim_pending_result",
-    description: "\u9886\u53D6\u63A2\u6817\u63D2\u4EF6\u4FA7\u5DF2\u5B8C\u6210\u4F46\u672A\u88AB\u8BA4\u9886\u7684\u4EFB\u52A1\u7ED3\u679C\uFF08\u4E0D\u5360\u91C7\u96C6\u9650\u989D\u3001\u79D2\u56DE\uFF09\u3002\u4F55\u65F6\u7528\uFF1A\u2460\u4EFB\u52A1\u8D85\u65F6\u540E\uFF08\u63D2\u4EF6\u53EF\u80FD\u5DF2\u8DD1\u5B8C\uFF0C\u5148\u9886\u518D\u51B3\u5B9A\u662F\u5426\u91CD\u53D1\uFF0C\u907F\u514D\u53CC\u8017\u91C7\u96C6\u989D\u5EA6\uFF09\uFF1B\u2461\u5BBF\u4E3B/\u4F1A\u8BDD\u91CD\u542F\u540E\u56DE\u6765\uFF1B\u2462connection_status \u7684 extension.pendingResults \u5217\u8868\u975E\u7A7A\u65F6\u3002\u9886\u53D6\u7ED3\u679C\u91CC results \u4E3A\u7ED3\u679C\u672C\u4F53\u53EF\u76F4\u63A5\u4F7F\u7528\uFF0Cpending \u4E3A\u5269\u4F59\u672A\u9886\u53D6\u6458\u8981\u3002\u9886\u4E0D\u5230\u518D\u7528 query_local_data \u67E5\u672C\u5730\u5E93\uFF0C\u90FD\u6CA1\u6709\u624D\u8003\u8651\u91CD\u53D1\u4EFB\u52A1\u3002",
+    description:
+      "领取探栗插件侧已完成但未被认领的任务结果（不占采集限额、秒回）。何时用：①任务超时后（插件可能已跑完，先领再决定是否重发，避免双耗采集额度）；②宿主/会话重启后回来；③connection_status 的 extension.pendingResults 列表非空时。领取结果里 results 为结果本体可直接使用，pending 为剩余未领取摘要。领不到再用 query_local_data 查本地库，都没有才考虑重发任务。⭐R96bw 用户喊「栗子报告」时的合一入口：先调本工具领 pending 结果（有刚完成的报告先交付最新一份）；无 pending/领完再 query_local_data(source=\"reports\") 列最近报告一览（≤7 条）收尾。",
     inputSchema: {
       type: "object",
       properties: {
-        taskId: { type: "string", description: "\u53EF\u9009\uFF1A\u8981\u9886\u53D6\u7684 taskId\uFF08\u6765\u81EA connection_status \u7684 extension.pendingResults\uFF09\uFF1B\u4E0D\u4F20=\u9886\u53D6\u5168\u90E8\u672A\u9886\u53D6\u7ED3\u679C" }
+        taskId: { type: "string", description: "可选：要领取的 taskId（来自 connection_status 的 extension.pendingResults）；不传=领取全部未领取结果" },
       },
-      additionalProperties: false
-    }
-  }
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "leadsradar_get_latest_skills",
+    description:
+      "获取探栗五技能（情报栗 radar / 洞察栗 insights / 创作栗 creator / 成交栗 closer / 管家栗 helper）云端最新版 SKILL.md。何时用：connection_status 的 skills_latest 对照宿主技能文件 frontmatter version 发现落后时——技能文件装在宿主技能库里（探栗MCP 够不着），本工具把最新 SKILL.md 全文递上来，宿主 AI 展示给用户整体复制、按宿主自己的技能安装方式覆盖旧文件即可完成技能升级。不传 name 返回五技能的云端最新版本表与更新指引；传 name 返回该技能 SKILL.md 全文（content 字段）与从 frontmatter 提取的 version。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", enum: ["radar", "insights", "creator", "closer", "helper"], description: "技能名（五栗之一）；不传=返回版本表+更新指引" },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
-var SVC_IPC_PORT = 17374;
-var svcWakeFailed = false;
+
+/* ================= ⭐msg11 AI 唤醒探栗 MCP（TL MCP exe） =================
+ * 触发点：leadsradar_connection_status（用户对 Agent 说「栗子在吗」等探活指令）。
+ * 路径发现：读 Native Messaging 注册表（Chrome/Edge 任一）→ manifest json 的 path 字段=exe 绝对路径。
+ * 安全边界：只读 HKCU（用户级，插件安装时写入的正是这里）；未装/未注册 → 静默跳过（缓存失败标记防轮询重扫）；
+ * 重复唤醒无害（TL MCP 单实例保护：bind 失败 exit(0)）。 */
+const SVC_IPC_PORT = 17374; // TL MCP Rust IPC 端口（NDJSON）
+let svcWakeFailed = false; // 注册表/路径都找不到 → 缓存，后续调用直接跳过
+
 function isTcpOpen(port) {
   return new Promise((resolve) => {
     const s = createConnection({ port, host: "127.0.0.1" });
-    const done = (ok) => {
-      s.destroy();
-      resolve(ok);
-    };
+    const done = (ok) => { s.destroy(); resolve(ok); };
     s.setTimeout(600, () => done(false));
     s.once("connect", () => done(true));
     s.once("error", () => done(false));
   });
 }
+
 async function wakeLocalService() {
   try {
     if (process.platform !== "win32" || svcWakeFailed) return;
-    if (await isTcpOpen(SVC_IPC_PORT)) return;
+    if (await isTcpOpen(SVC_IPC_PORT)) return; // 已在跑，秒短路
     const regKeys = [
       "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.leadsradar.service",
-      "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.leadsradar.service"
+      "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.leadsradar.service",
     ];
     for (const k of regKeys) {
       try {
-        const { stdout } = await new Promise((res, rej) => execFile("reg", ["query", k, "/ve"], { windowsHide: true }, (e, so) => e ? rej(e) : res({ stdout: so })));
+        const { stdout } = await new Promise((res, rej) =>
+          execFile("reg", ["query", k, "/ve"], { windowsHide: true }, (e, so) => (e ? rej(e) : res({ stdout: so }))));
         const m = stdout.match(/REG_SZ\s+(\S.*com\.leadsradar\.service\.json)/i);
         if (!m) continue;
         const conf = JSON.parse(readFileSync(m[1].trim(), "utf8"));
@@ -5035,23 +2033,287 @@ async function wakeLocalService() {
         if (!exe || !existsSync(exe)) continue;
         const child = spawn(exe, ["--woken-by-agent"], { detached: true, stdio: "ignore", windowsHide: true });
         child.unref();
-        log(`[lf-agent] AI \u5524\u9192\uFF1A\u63A2\u6817 MCP \u672A\u8FD0\u884C\uFF0C\u5DF2\u62C9\u8D77 ${exe}`);
+        log(`[lf-agent] AI 唤醒：探栗 MCP 未运行，已拉起 ${exe}`);
         return;
-      } catch {
-      }
+      } catch { /* 该注册表键不存在 → 试下一个 */ }
     }
-    svcWakeFailed = true;
-  } catch {
+    svcWakeFailed = true; // 两键都找不到 = 用户未装 TL MCP，缓存后不再扫
+  } catch { /* 唤醒是增强能力，任何失败都不影响主流程 */ }
+}
+
+/* ================= ⭐R79 适配器自更新 + 云端技能下发 =================
+   自更新链路（升级挂「栗子在吗」常径，不设专门触发词，用户零感知）：
+   ①进程启动后台异步查云端最新 mjs（unpkg @latest 实时 302 → jsdelivr 双源 fallback），
+     从文件内容提取 ADAPTER_VERSION 比对（只升不降），有新版则 tmp+rename 原子覆盖自己——
+     node 运行期不锁脚本文件，本地文件型宿主覆盖下载目录 mjs、npx 型覆盖 _npx 缓存内的自己，
+     下次进程启动即新版；运行中的旧代码继续服务不受影响。
+   ②connection_status（「栗子在吗」）首调时若无结论（启动预检可能因瞬时断网/镜像未同步失败）补检一次。
+   ③三态经 statusSnapshot 的 adapter.update 透出：checking / up-to-date / updated-pending-restart，
+     管家栗报到表格据此渲染「已自动升级 x → y，重启宿主后生效」。
+   三纪律：失败静默保持旧版（不抛错不影响 MCP 服务）、只升不降（本地测试版新于 npm 时不回退）、
+   30min 节流（状态文件 ~/.leadsradar-agent-update.json，多宿主进程共用——窗口内有人查过即可；⭐R96bm 由 24h 缩短）。
+   云端生效前提 = npm 发版 leadsradar-agent（自更新与 get_latest_skills 的同一源头）。 */
+
+const SELF_FILE = fileURLToPath(import.meta.url);
+const UPDATE_STATE_FILE = join(homedir(), ".leadsradar-agent-update.json");
+// ⭐R96bm 节流 24h→30min：检查是一次轻量 GET（unpkg 秒回），24h 窗太长——实锤事故（1.2.80 宿主
+//   停更五批：jsdelivr 滞后老包毒化 up-to-date 判定后 24h 节流锁死不再查网）；30min 窗下任何
+//   误判最多锁 30 分钟，网络故障重试频率（每 30min 一次 GET）可忽略不计
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+// ⭐R96g1ak up-to-date 短窗：30min 节流按结论分档——「发现新版」（latestVersion 新于进程，
+//   下载/写盘重活）保持 30min 防抖；「up-to-date / 查询失败」（无变化/没查到，零下载成本）
+//   缩 3min。实锤事故（⭐2026-11-02 用户实报「栗子在吗仍全最新」）：npm publish 后 CDN 传播
+//   有 ~10min 真空窗（registry ~5min、data.jsdelivr ~10min），宿主在窗内查网拿到的是「当时
+//   真值」旧版——查询本身没错，错在 up-to-date 是零价值结论（缓存只省一次秒回 GET）却享受
+//   30min 长缓存，把「发新版」的发现延迟锁满一整窗。3min 窗下任何误判最多自愈 3 分钟。
+const UPDATE_FRESH_INTERVAL_MS = 3 * 60 * 1000;
+// ⭐R96cz 源链 v2（推翻 R79 双源制——实锤事故：宿主 unpkg 抖动后 jsdelivr@latest CDN 缓存滞后三版
+//   （npm 已 1.2.108/jsdelivr 还 1.2.106），宿主 1.2.104 被喂滞后版 1.2.106 写盘重启、再查又拿滞后
+//   1.2.107——追不上 npm 最新，进程内置 SKILLS_LATEST 旧表致技能自检永远「全最新」，helper 1.4.19
+//   送不到。R96bm 滞后守卫只拦「备源报不新于进程」，拦不住「报一个滞后但新于进程的版本」）：
+//   ①unpkg @latest（实时，主源）②registry API 拿精确最新包版本（npmjs 官方→npmmirror 国内双 API，
+//   npmmirror 有 10min~1h 同步滞后但远好于 jsdelivr@latest 的数天）③jsdelivr@精确版本（显式版本 URL
+//   缓存键唯一无 latest 滞后，发布后请求必命中新版；版本号来自 registry 权威 → 判定可信按 primary 对待）
+//   ④jsdelivr@latest（最后兜底，primary:false，判定不可信由 maybeSelfUpdate 滞后守卫拦）。
+//   R79 旧测「npmmirror files CDN 403」指文件 CDN，registry API（JSON 元数据）可用——版本号走 API、
+//   文件体仍走 jsdelivr。
+// ⭐R96dz 版本号链头插 data.jsdelivr（实锤事故：npm 1.0.102 已发，unpkg@latest 停 8 天前 1.0.13、
+//   npmmirror /latest 停 1.0.89、npmjs 国内不通——版本号发现链被国内可达源的 CDN 缓存整体卡死，
+//   宿主技能拉新永远拿旧包报「回撤/滞后」；data.jsdelivr 元数据 API 国内秒回且分钟级新鲜（实测
+//   发版后 tags.latest 即时 1.0.102），形状 {tags:{latest}} 与 registry /latest 的 {version}
+//   在 fetchLatestNpmVersion 双形状兼容解析；data.jsdelivr 滞后时仍有 npmjs→npmmirror 串行兜底，
+//   版本号旧只致拿旧文件，只升不降+非 primary 滞后守卫双拦不降级，行为不劣于 v2）
+const REGISTRY_VERSION_APIS = [
+  "https://data.jsdelivr.com/v1/packages/npm/leadsradar-agent",
+  "https://registry.npmjs.org/leadsradar-agent/latest",
+  "https://registry.npmmirror.com/leadsradar-agent/latest",
+];
+const SKILL_NAMES = ["radar", "insights", "creator", "closer", "helper"];
+const selfUpdate = { state: "idle", latestVersion: null, fromVersion: null, checkedAt: null };
+
+function compareVersions(a, b) {
+  const pa = String(a).split(".").map(Number);
+  const pb = String(b).split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+function readUpdateStateFile() {
+  try { return JSON.parse(readFileSync(UPDATE_STATE_FILE, "utf8")) || {}; } catch { return {}; }
+}
+
+/* ⭐R96cz 源链 v2 拉文件全文（四步链见上方注释块）；返回 null = 全部源失败。
+   返回 {text, primary}：primary=true=判定可信源（unpkg 实时 / jsdelivr@精确版本——版本号来自
+   registry 权威，显式 URL 无缓存滞后），primary=false=jsdelivr@latest（缓存可能滞后，
+   「不新于进程」结论不可信，由 maybeSelfUpdate 滞后守卫拦） */
+async function fetchLatestNpmVersion() {
+  for (const api of REGISTRY_VERSION_APIS) {
+    try {
+      const res = await fetch(api, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) continue;
+      const j = await res.json();
+      // ⭐R96dz 双形状兼容：registry /latest 报 {version}，data.jsdelivr 报 {tags:{latest}}
+      const ver = j && String(j.version || (j.tags && j.tags.latest) || "");
+      if (/^\d+\.\d+\.\d+/.test(ver)) return ver;
+    } catch { /* 换下一个 API */ }
+  }
+  return null;
+}
+
+async function fetchRemoteText(path) {
+  if (typeof fetch !== "function") return null; // node < 18 无内置 fetch：静默跳过
+  const guard = (t) => t && t.length > 1000 && !t.trimStart().startsWith("<"); // 防镜像错误页
+  const tryFetch = async (url, primary) => {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(15000), redirect: "follow" });
+      if (!res.ok) return null;
+      const text = await res.text();
+      return guard(text) ? { text, primary } : null;
+    } catch { return null; }
+  };
+  // ⭐R96di 串行三源改并行竞速（修「栗子在吗拉技能经常卡几分钟」主根因）：旧链 unpkg@latest 15s 失败→
+  //   registry 8s+jsdelivr@精确版 15s→jsdelivr@latest 15s 逐段串行，最坏 45s+，镜像抖动时技能拉新/自更新
+  //   检查全程堵在这里。改法：主源组（unpkg@latest 与 registry→jsdelivr@精确版，均 primary 可信）同时
+  //   起跑任一命中即返回；jsdelivr@latest 兜底（primary 不可信）同步起跑——仅主源组全败才收割，R96bm
+  //   滞后守卫语义原样保留；此时兜底已跑完零追加等待。最坏 ~23s（registry8s+jsdelivr15s 支路串行上界），
+  //   正常网络 unpkg 秒回 2-5s。实现细节：未命中（resolve null）转 reject——否则 Promise.any 会被
+  //   unpkg 的秒回 null 短路，退化成只靠单源
+  // ⭐R96dz 主源组 @latest 别名退役改精确版双源竞速（实锤事故：unpkg@latest CDN 缓存停 8 天前 1.0.13
+  //   且 primary=true 缓存秒回必赢竞速，旧包毒化「最新」判定+技能全文喂老版——R96cz 设计时
+  //   「unpkg @latest 实时」的假定被打破，且 L1903 滞后守卫只拦非 primary 备源、拦不住 primary 毒源；
+  //   改法：unpkg 与 jsdelivr 同挂 @精确版显式 URL（版本号来自 data.jsdelivr 权威元数据，缓存键唯一
+  //   无 latest 滞后）双源竞速——unpkg 不通时 jsdelivr 单源承载；正常网络 data.jsdelivr 版本号秒回+
+  //   精确版秒到共 2-6s；jsdelivr@latest 兜底保留（primary:false，R96bm 滞后守卫拦））
+  const toPrimary = (p) => p.then((v) => v || Promise.reject(new Error("miss")));
+  const fallback = tryFetch(`https://cdn.jsdelivr.net/npm/leadsradar-agent${path}`, false);
+  const viaExact = fetchLatestNpmVersion().then((exact) =>
+    exact
+      ? Promise.any([
+          toPrimary(tryFetch(`https://unpkg.com/leadsradar-agent@${exact}${path}`, true)),
+          toPrimary(tryFetch(`https://cdn.jsdelivr.net/npm/leadsradar-agent@${exact}${path}`, true)),
+        ]).catch(() => null)
+      : null
+  );
+  try {
+    return await toPrimary(viaExact);
+  } catch { /* 主源组全败：收割兜底 */ }
+  return await fallback;
+}
+
+async function maybeSelfUpdate() {
+  if (selfUpdate.state === "checking") return; // 防并发重入（启动预检与探活补检撞车）
+  const saved = readUpdateStateFile();
+  // ⭐R96g1ak 节流分档：发现新版（latestVersion 新于进程，重活防抖）→ 30min；
+  //   up-to-date/上次失败（零下载成本）→ 3min 短窗——CDN 传播窗内拿到的旧「无变化」结论
+  //   最多毒化 3 分钟，新版发布后用户再问「栗子在吗」即可发现（修「registry 确认≠CDN 就绪」
+  //   时序洞的宿主侧半边；发版侧半边=agent-deploy publish-ready.mjs 就绪守卫）
+  const foundNewer = saved.latestVersion && compareVersions(saved.latestVersion, ADAPTER_VERSION) > 0;
+  const throttleMs = foundNewer ? UPDATE_CHECK_INTERVAL_MS : UPDATE_FRESH_INTERVAL_MS;
+  if (saved.lastChecked && Date.now() - saved.lastChecked < throttleMs) {
+    // 24h 内查过：上次成功（有 latestVersion）→ 推定 up-to-date——覆盖成功过的重启后磁盘已是
+    // 新版（版本自然对齐），无需再打外网；上次失败（只剩 lastError）→ 保持 idle，不假报也不打网
+    // ⭐R96am 守卫：不覆盖 updated-pending-restart——磁盘保底（checkDiskSelfNewer）已探明磁盘
+    // 新于进程时，节流缓存的「推定最新」是假象（npm 升级换了磁盘），重启提醒必须保住
+    if (saved.latestVersion && selfUpdate.state !== "updated-pending-restart") {
+      selfUpdate.state = "up-to-date";
+      selfUpdate.latestVersion = saved.latestVersion;
+      selfUpdate.checkedAt = saved.lastChecked;
+    }
+    return;
+  }
+  selfUpdate.state = "checking";
+  try {
+    const remote = await fetchRemoteText("/leadsradar-agent.mjs");
+    // 宽松提取：npm 版 mjs 是打包产物（const→var/去空格），不写死 `const ADAPTER_VERSION = "..."` 前缀；
+    // 声明处是全文件第一个 `ADAPTER_VERSION = "x.y.z"` 赋值格式（L55 前无同名赋值），match 首个即安全
+    const m = remote && remote.text.match(/ADAPTER_VERSION\s*=\s*["'](\d+\.\d+\.\d+)["']/);
+    if (!m) throw new Error("fetch latest mjs failed");
+    // ⭐R96bm 备源滞后守卫：jsdelivr latest 的 CDN 缓存可能落后 npm 数小时~数天（实锤事故：
+    //   unpkg 抖动走备源，缓存 1.2.66 老包 < 进程 1.2.80 被误判 up-to-date 并写节流锁死 24h，
+    //   宿主停更五批）——备源报「不新于进程」不可信，本轮放弃判定（不写节流状态文件保持
+    //   idle），下轮报到再查；备源报「新于进程」可信（滞后缓存不可能凭空多出新版本号）
+    if (!remote.primary && compareVersions(m[1], ADAPTER_VERSION) <= 0) {
+      selfUpdate.state = "idle";
+      log(`[lf-agent] 备源(${m[1]})疑似 CDN 滞后（进程 ${ADAPTER_VERSION}），本轮不判定，下轮再查`);
+      return;
+    }
+    selfUpdate.latestVersion = m[1];
+    selfUpdate.checkedAt = Date.now();
+    if (compareVersions(m[1], ADAPTER_VERSION) <= 0) {
+      if (selfUpdate.state !== "updated-pending-restart") selfUpdate.state = "up-to-date"; // ⭐R96am 守卫：磁盘保底结论优先于云端（磁盘新于进程即该提醒重启）
+      try { writeFileSync(UPDATE_STATE_FILE, JSON.stringify({ ...saved, lastChecked: selfUpdate.checkedAt, latestVersion: m[1] }), "utf8"); } catch { /* 节流写失败不阻断 */ }
+      return;
+    }
+    // 有新版：tmp + rename 原子覆盖自己（失败静默保持旧版）
+    // ⭐R96bs 修复：写盘必须用 remote.text——R96bm 给 fetchRemoteText 加源标记改成返回 {text, primary}
+    //   对象时，此处漏改仍传整个对象 → writeFileSync 抛 TypeError「data must be string…Received Object」
+    //   → catch 静默 → 自更新「有新版」分支每次都死在这里，磁盘永远换不成新版（实锤事故：宿主
+    //   1.2.84 停更四批，~/.leadsradar-agent-update.json 留 lastError 铁证，R96bo~R96br 全没拉到）
+    const tmpFile = SELF_FILE + ".tmp";
+    writeFileSync(tmpFile, remote.text, "utf8");
+    renameSync(tmpFile, SELF_FILE);
+    selfUpdate.fromVersion = ADAPTER_VERSION;
+    selfUpdate.state = "updated-pending-restart";
+    log(`[lf-agent] 自更新：${ADAPTER_VERSION} → ${m[1]} 已写入 ${SELF_FILE}，重启宿主后生效`);
+    try { writeFileSync(UPDATE_STATE_FILE, JSON.stringify({ lastChecked: selfUpdate.checkedAt, latestVersion: m[1], lastUpdate: { from: ADAPTER_VERSION, to: m[1], at: new Date().toISOString() } }), "utf8"); } catch { /* noop */ }
+  } catch (e) {
+    // 失败静默保持旧版；也写节流（网络故障时不至于每次启动都打外网），24h 后自动再试
+    if (selfUpdate.state !== "updated-pending-restart") selfUpdate.state = "idle"; // ⭐R96am 守卫：网络失败不清掉磁盘保底已置的重启提醒
+    try { writeFileSync(UPDATE_STATE_FILE, JSON.stringify({ ...saved, lastChecked: Date.now(), lastError: String(e?.message || e).slice(0, 200) }), "utf8"); } catch { /* noop */ }
   }
 }
+
+/* ⭐R96am 磁盘对比保底：npm 升级（npm install -g leadsradar-agent@latest）换的是磁盘文件，常驻进程
+   不热替换；而节流分支（24h 内查过 → 推定 up-to-date）不感知磁盘已换——旧进程会一直报最新、重启
+   提醒永不触发（R96 实测事故根因）。每次 connection_status（「栗子在吗」）读自身文件提取版本比对，
+   磁盘 > 进程 → 置 updated-pending-restart（statusSnapshot 透出，管家栗报到渲染「重启宿主生效」）。
+   只读本地文件零网络；磁盘 ≤ 进程（正常态/测试版新于 npm）不动状态。 */
+function checkDiskSelfNewer() {
+  try {
+    const disk = readFileSync(SELF_FILE, "utf8");
+    const m = disk.match(/ADAPTER_VERSION\s*=\s*["'](\d+\.\d+\.\d+)["']/); // 与 maybeSelfUpdate 同款宽松提取
+    if (!m || compareVersions(m[1], ADAPTER_VERSION) <= 0) return;
+    selfUpdate.fromVersion = ADAPTER_VERSION;
+    selfUpdate.latestVersion = m[1];
+    selfUpdate.state = "updated-pending-restart";
+    log(`[lf-agent] 磁盘 mjs 已是新版 ${m[1]}（进程 ${ADAPTER_VERSION}），重启宿主后生效`);
+  } catch { /* 读盘失败静默跳过，不影响报到 */ }
+}
+
+/* ⭐R96g1be 技能版本表云端实时化（破「表旧文新」死锁）：SKILLS_LATEST 是进程内置常量，宿主不
+   重启进程就永远停在装机版——实锤 261104：主 Broker 1.2.167 进程 updated-pending-restart 数批
+   未换，表冻在 radar 1.2.70/helper 1.4.36，而内容源 CDN 已 1.2.75/1.4.49（get_latest_skills
+   传 name 回新全文 latestKnown 却报旧表）——宿主报到对照表判定「无需更新」，五技能全锁死旧版：
+   用户实报「格式问题还在」=radar 1.2.75 黑名单从未入库，R96cz 注释里「旧表致技能自检永远全最新」
+   是同族病根但当时只修了版本号发现链没修表源。解：表也从 CDN 拉——复用 fetchRemoteText 源链拉
+   mjs 自身提取 SKILLS_LATEST 字面量，TTL 10min+失败保旧值（记 at 防 CDN 打爆）；内置常量降级为
+   兜底初值。消费侧：statusSnapshot 同步读缓存（connection_status 后台 void 刷新不阻塞报到，
+   下次报到见新表）；get_latest_skills await 实时（显式拉新语义值得等秒级延迟） */
+let skillsLatestLive = { at: 0, table: SKILLS_LATEST };
+let skillsLatestRefreshing = null;
+async function refreshSkillsLatestLive() {
+  if (Date.now() - skillsLatestLive.at < 10 * 60 * 1000) return skillsLatestLive.table;
+  if (skillsLatestRefreshing) return skillsLatestRefreshing;
+  skillsLatestRefreshing = (async () => {
+    try {
+      const fetched = await fetchRemoteText(`/leadsradar-agent.mjs`);
+      const text = fetched?.text;
+      const block = text && text.match(/const SKILLS_LATEST = \{[\s\S]*?\};/)?.[0];
+      const table = {};
+      if (block) for (const m of block.matchAll(/(\w+):\s*"([\d.]+)"/g)) table[m[1]] = m[2];
+      if (SKILL_NAMES.every((k) => table[k])) {
+        skillsLatestLive = { at: Date.now(), table };
+        return table;
+      }
+    } catch { /* 静默：网络/源链失败保旧值 */ }
+    skillsLatestLive = { at: Date.now(), table: skillsLatestLive.table };
+    return skillsLatestLive.table;
+  })().finally(() => { skillsLatestRefreshing = null; });
+  return skillsLatestRefreshing;
+}
+
+/* ⭐R79 get_latest_skills 的实现：拉云端某技能最新 SKILL.md 全文（frontmatter 提取 version）
+   ⭐R96bm fetchRemoteText 已改返回 {text,primary}——技能侧仅取 text（滞后旧技能无害：
+   等同维持本地版不降级，unpkg 主源恢复后自然拉到新版；版本滞后守卫只在自更新侧做） */
+async function fetchLatestSkillMd(name) {
+  const fetched = await fetchRemoteText(`/skills/leadsradar-${name}/SKILL.md`);
+  const text = fetched?.text;
+  if (!text) return null;
+  const m = text.match(/^---\n([\s\S]*?)\n---/);
+  const version = (m && m[1].match(/version:\s*["']?([\d.]+)/)?.[1]) || null;
+  return { content: text, version };
+}
+
 async function callTool(name, args) {
+  // ⭐R96g1ba 短名容错（261103 宿主实报「工具需要用全名调用」重试才成功）：宿主 AI 偶发丢前缀调
+  //   短名（connection_status 而非 leadsradar_connection_status），严格 switch 撞 UNKNOWN_TOOL →
+  //   宿主报「工具直连失败」。git 取证 TOOLS 命名链从未变更（非本仓回归）——入口统一补前缀根治：
+  //   30 个工具全注册为 leadsradar_ 前缀，短名补齐即原工具，宿主无感
+  if (typeof name === "string" && name && !name.startsWith("leadsradar_")) {
+    name = `leadsradar_${name}`;
+  }
   switch (name) {
     case "leadsradar_connection_status":
+      // ⭐msg11 AI 唤醒探栗 MCP：用户对 Agent 说「栗子在吗」=明确要用（connection_status 是唯一探活指令），
+      // 此时 TL MCP 未跑则自动拉起——TL MCP 无独立主窗口，「被 Agent 唤醒」就是用户打开它的主要方式；
+      // 不在 agent 启动时拉（避免违背「托盘退出=尊重」），只在此交互信号点拉；已跑则探测端口秒短路
       void wakeLocalService();
+      // ⭐R79 升级挂「栗子在吗」常径：启动预检可能因瞬时断网/镜像未同步失败（idle），探活时若无
+      // 结论就补检一次（maybeSelfUpdate 自带节流+防重入；异步不 await，报到秒回不阻塞）
+      if (selfUpdate.state === "idle") void maybeSelfUpdate();
+      // ⭐R96am 磁盘对比保底：节流窗内推定最新会漏掉「npm 升级已换磁盘文件」的场景，每次报到
+      // 零成本读自身文件比对（详见 checkDiskSelfNewer 头注释），磁盘>进程 → 透出重启提醒
+      checkDiskSelfNewer();
+      // ⭐R96g1be 技能版本表后台刷新（不阻塞报到秒回）：TTL 过期才发请求，本次仍回缓存表、
+      //   下次报到（≥10min 后）见新表——宿主不重启进程也能拿到最新表，破更新死锁
+      void refreshSkillsLatestLive();
       return broker.statusSnapshot();
     case "leadsradar_search_notes": {
       const keyword = String(args.keyword || "").trim();
-      if (!keyword) return { ok: false, error: { code: "BAD_ARGS", message: "\u7F3A\u5C11 keyword" } };
+      if (!keyword) return { ok: false, error: { code: "BAD_ARGS", message: "缺少 keyword" } };
       const platform = args.platform === "douyin" ? "douyin" : "xiaohongshu";
       return broker.startTask({
         mode: "search_results",
@@ -5059,96 +2321,406 @@ async function callTool(name, args) {
         keyword,
         limit: capLimit(args.limit, 10),
         source: HOST,
-        agentContext: { host: HOST }
+        agentContext: { host: HOST },
       });
     }
     case "leadsradar_capture_profile": {
       const url = String(args.url || "").trim();
-      if (!/^https?:\/\//.test(url)) return { ok: false, error: { code: "BAD_ARGS", message: "\u7F3A\u5C11\u6709\u6548\u7684\u535A\u4E3B\u4E3B\u9875 url" } };
-      return broker.startTask({
-        mode: "profile_posts",
-        url,
-        limit: capLimit(args.limit, 20),
-        source: HOST,
-        agentContext: { host: HOST }
-      });
+      if (!/^https?:\/\//.test(url)) return { ok: false, error: { code: "BAD_ARGS", message: "缺少有效的博主主页 url" } };
+      // ⭐R96bo 深度采集版（deep:true）：引擎侧 executeDeepProfile 分发（agent-tasks.ts），
+      //   与插件账号 Tab「深度采集」按钮同源同引擎（content deepCapture 协议），
+      //   5-20 分钟 fire-and-forget：立即回 pending，完成后「栗子报告」取报告
+      const deep = args.deep === true;
+      return broker.startTask(
+        {
+          mode: "profile_posts",
+          url,
+          limit: deep ? capLimit(args.limit, 20, 50) : capLimit(args.limit, 20),
+          ...(deep ? { deep: true, comments_limit: capLimit(args.comments_limit, 50, 100) } : {}),
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        // ⭐R96cf 快扫版默认联动深扫（引擎读 local_scan_settings.deepComments 决定，默认开）：
+        //   列表 ~60s + 深扫条数×45s；⭐R96dq 阴阳规则首扫一轮干满设置条数（≤50 条），50 条≈39min，
+        //   引擎窗按 ruleLimit 动态计算（见 agent-tasks.ts deepTimeoutMs），此 broker 窗只是兜底
+        //   （防引擎失联回执永不回），15min→45min 覆盖首扫最大值；纯快扫提前完成不受影响
+        45 * 60 * 1000,
+      );
     }
     case "leadsradar_capture_note_comments": {
       const url = String(args.url || "").trim();
-      if (!/^https?:\/\//.test(url)) return { ok: false, error: { code: "BAD_ARGS", message: "\u7F3A\u5C11\u6709\u6548\u7684\u7B14\u8BB0 url" } };
+      if (!/^https?:\/\//.test(url)) return { ok: false, error: { code: "BAD_ARGS", message: "缺少有效的笔记 url" } };
       return broker.startTask({
         mode: "comments",
         url,
         limit: capLimit(args.limit, 30, MAX_COMMENT_LIMIT),
         source: HOST,
-        agentContext: { host: HOST }
+        agentContext: { host: HOST },
       });
     }
     case "leadsradar_note_detail": {
       const url = String(args.url || "").trim();
-      if (!/^https?:\/\//.test(url)) return { ok: false, error: { code: "BAD_ARGS", message: "\u7F3A\u5C11\u6709\u6548\u7684\u7B14\u8BB0 url" } };
+      if (!/^https?:\/\//.test(url)) return { ok: false, error: { code: "BAD_ARGS", message: "缺少有效的笔记 url" } };
       return broker.startTask(
         { mode: "current_note", url, source: HOST, agentContext: { host: HOST } },
-        NOTE_DETAIL_TIMEOUT_MS
+        NOTE_DETAIL_TIMEOUT_MS,
       );
     }
     case "leadsradar_download_media": {
       const note = args.note && typeof args.note === "object" && !Array.isArray(args.note) ? args.note : null;
-      const url = String(note && (note.note_url || note.url || note.share_url) || args.url || "").trim();
+      const url = String((note && (note.note_url || note.url || note.share_url)) || args.url || "").trim();
       if (!note && !/^https?:\/\//.test(url)) {
-        return { ok: false, error: { code: "BAD_ARGS", message: "\u9700\u63D0\u4F9B note \u5BF9\u8C61\uFF08\u91C7\u96C6\u8FD4\u56DE\u539F\u6837\u4F20\u56DE\uFF09\u6216 url \u53C2\u6570" } };
+        return { ok: false, error: { code: "BAD_ARGS", message: "需提供 note 对象（采集返回原样传回）或 url 参数" } };
       }
       return broker.startTask(
         {
           mode: "download_media",
-          ...note ? { note } : { url, platform: args.platform === "douyin" ? "douyin" : "xiaohongshu" },
+          ...(note ? { note } : { url, platform: args.platform === "douyin" ? "douyin" : "xiaohongshu" }),
           source: HOST,
-          agentContext: { host: HOST }
+          agentContext: { host: HOST },
         },
-        6 * 60 * 1e3
-        // ⭐r80 提取（后台开页刷新 ~15s）+ 大文件真实下载完成监听（5min 超时保护）
+        6 * 60 * 1000, // ⭐r80 提取（后台开页刷新 ~15s）+ 大文件真实下载完成监听（5min 超时保护）
+      );
+    }
+    case "leadsradar_extract_text": {
+      const note = args.note && typeof args.note === "object" && !Array.isArray(args.note) ? args.note : null;
+      const url = String((note && (note.note_url || note.url || note.share_url)) || args.url || "").trim();
+      if (!note && !/^https?:\/\//.test(url)) {
+        return { ok: false, error: { code: "BAD_ARGS", message: "需提供 note 对象（采集返回原样传回）或 url 参数" } };
+      }
+      return broker.startTask(
+        {
+          mode: "extract_text",
+          ...(note ? { note } : { url }),
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        210000, // ⭐R96ak 云端 ASR 转录轮询（90×2s）+ 提交余量
+      );
+    }
+    case "leadsradar_note_deep_research": {
+      const note = args.note && typeof args.note === "object" && !Array.isArray(args.note) ? args.note : null;
+      const url = String((note && (note.note_url || note.url || note.share_url)) || args.url || "").trim();
+      if (!note && !/^https?:\/\//.test(url)) {
+        return { ok: false, error: { code: "BAD_ARGS", message: "需提供 note 对象（采集返回原样传回）或 url 参数" } };
+      }
+      return broker.startTask(
+        {
+          mode: "note_deep",
+          ...(note ? { note } : { url }),
+          force: args.force === true,
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        300000, // ⭐R96at 缺口现采（scratch 三连 ~60s）+ 云端 job 同步等 180s + 余量；超时后插件后台续等完成自动回灌待领取（「栗子报告」）
+      );
+    }
+    case "leadsradar_track_deep_research": {
+      // ⭐R96bp 赛道深研开窗：与赛道页「赛道深度研究」按钮同源（COLLECT_SEARCH_RESULTS+deepCapture →
+      // deepKeywordAnalysis 三段式报告，8 积分/非会员首免）
+      // ⭐R96bv 扫描量可调：sample_count/top_deep/comment_limit 数值化透传（白名单 clamp 在引擎侧做）
+      const keyword = String(args.keyword || "").trim();
+      if (!keyword) return { ok: false, error: { code: "BAD_ARGS", message: "缺少赛道关键词 keyword（如「辅食」）" } };
+      const numOrUndef = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : undefined);
+      return broker.startTask(
+        {
+          mode: "track_deep",
+          keyword,
+          platform: args.platform === "douyin" ? "douyin" : "xiaohongshu",
+          force: args.force === true,
+          ...(numOrUndef(args.sample_count) != null ? { sample_count: numOrUndef(args.sample_count) } : {}),
+          ...(numOrUndef(args.top_deep) != null ? { top_deep: numOrUndef(args.top_deep) } : {}),
+          ...(numOrUndef(args.comment_limit) != null ? { comment_limit: numOrUndef(args.comment_limit) } : {}),
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        300000, // ⭐R96bp draft 命中走 AI 需长等；无 draft 采集启动后秒回 pending，后台 15-30 分钟完成后 lateResultSink 回灌——「栗子报告」取报告
+      );
+    }
+    case "leadsradar_account_deep_research": {
+      // ⭐R96br 账号深度研究开窗：与账号页「账号深度研究」按钮同源（本地装料/深采垫场 →
+      // accountSnapshotAsync 云端 job → IP 主线/内容支柱/获客建议报告，非会员首免/之后积分）
+      const url = String(args.url || "").trim();
+      if (!/^https?:\/\//.test(url)) return { ok: false, error: { code: "BAD_ARGS", message: "缺少博主主页 url（小红书 /user/profile/ 或抖音 /user/）" } };
+      return broker.startTask(
+        {
+          mode: "account_deep",
+          url,
+          ...(args.platform === "douyin" || args.platform === "xiaohongshu" ? { platform: args.platform } : {}),
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        300000, // ⭐R96br 快路径装料+job 提交同步段；慢路径深采启动后秒回 pending，后台 6-25 分钟完成后 lateResultSink 回灌——「栗子报告」取报告
       );
     }
     case "leadsradar_save_topic": {
       const note = args.note;
       if (!note || typeof note !== "object" || Array.isArray(note) || !String(note.title || "").trim()) {
-        return { ok: false, error: { code: "BAD_ARGS", message: "\u7F3A\u5C11 note \u5BF9\u8C61\uFF08\u987B\u542B title \u5B57\u6BB5\uFF0C\u6765\u81EA\u91C7\u96C6\u5DE5\u5177\u8FD4\u56DE\u7684\u7B14\u8BB0\u6570\u636E\uFF09" } };
+        return { ok: false, error: { code: "BAD_ARGS", message: "缺少 note 对象（须含 title 字段，来自采集工具返回的笔记数据）" } };
       }
       return broker.startTask(
         { mode: "save_topic", note, remark: String(args.remark || ""), source: HOST, agentContext: { host: HOST } },
-        3e4
+        30000,
       );
     }
     case "leadsradar_add_monitor": {
       const url = String(args.url || "").trim();
-      if (!/^https?:\/\//.test(url)) return { ok: false, error: { code: "BAD_ARGS", message: "\u7F3A\u5C11\u6709\u6548\u7684\u535A\u4E3B\u4E3B\u9875 url" } };
+      if (!/^https?:\/\//.test(url)) return { ok: false, error: { code: "BAD_ARGS", message: "缺少有效的博主主页 url" } };
       return broker.startTask(
         { mode: "add_monitor", url, monitor: args.monitor === true, source: HOST, agentContext: { host: HOST } },
-        3e4
+        30000,
+      );
+    }
+    case "leadsradar_remove_benchmark": {
+      // ⭐R96bj 删对标开窗：url 或 name 至少其一（重名带 platform 消歧），破坏性操作宿主侧必须先确认
+      const url = String(args.url || "").trim();
+      const name = String(args.name || "").trim();
+      const platform = String(args.platform || "").trim();
+      if (!/^https?:\/\//.test(url) && !name) return { ok: false, error: { code: "BAD_ARGS", message: "缺少账号定位：需要主页 url 或账号名 name（至少其一，重名时带 platform 消歧）" } };
+      return broker.startTask(
+        { mode: "remove_benchmark", url, name, platform, source: HOST, agentContext: { host: HOST } },
+        30000,
+      );
+    }
+    case "leadsradar_pause_monitor": {
+      // ⭐R96ca 关监控开窗：url 或 name 至少其一（重名带 platform 消歧）；非破坏性（对标保留仅停监控）免确认
+      const url = String(args.url || "").trim();
+      const name = String(args.name || "").trim();
+      const platform = String(args.platform || "").trim();
+      if (!/^https?:\/\//.test(url) && !name) return { ok: false, error: { code: "BAD_ARGS", message: "缺少账号定位：需要主页 url 或账号名 name（至少其一，重名时带 platform 消歧）" } };
+      return broker.startTask(
+        { mode: "pause_monitor", url, name, platform, source: HOST, agentContext: { host: HOST } },
+        30000,
+      );
+    }
+    case "leadsradar_scan_settings": {
+      // ⭐R96dq 扫描设置开窗（「栗子扫描设置」）：本地工具型秒回；不传任何参=纯查，传哪个改哪个
+      //   （越界引擎侧夹到边界）；deepComments 严收 bool（"true" 字符串宿主偶发传，宽认防误关）
+      // ⭐R96dv 命中判定规则三参透传（hitMode/hitValue/observeHours——云端 PUT 引擎侧处理，需登录）
+      const has = (v) => v !== undefined && v !== null && String(v) !== "";
+      return broker.startTask(
+        {
+          mode: "scan_settings",
+          ...(has(args.first) ? { first: Number(args.first) } : {}),
+          ...(has(args.rescan) ? { rescan: Number(args.rescan) } : {}),
+          ...(args.deepComments !== undefined ? { deepComments: args.deepComments === true || args.deepComments === "true" } : {}),
+          ...(has(args.deepCommentLimit) ? { deepCommentLimit: Number(args.deepCommentLimit) } : {}),
+          ...(has(args.hitMode) ? { hitMode: String(args.hitMode) } : {}),
+          ...(has(args.hitValue) ? { hitValue: Number(args.hitValue) } : {}),
+          ...(has(args.observeHours) ? { observeHours: Number(args.observeHours) } : {}),
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        15000,
       );
     }
     case "leadsradar_pair_login": {
+      // ⭐R75 栗子登录：长任务（用户在网页慢慢登录），超时给足 5.5 分钟（插件侧轮询窗 5 分钟）
       return broker.startTask(
         { mode: "pair_login", source: HOST, agentContext: { host: HOST } },
-        33e4
+        330000,
       );
     }
     case "leadsradar_get_daily_report": {
+      // ⭐R96g1bb 超时 30s→60s：日报执行链含云端 briefing + monitorTargets + inbox 三个串行
+      //   fetch（插件端已各加 8s 超时兜底）+ IndexedDB 全量聚合，30s 对云端抖动太紧——60s 窗
+      //   + 插件端快速失败双保险，正常路径秒级回包不受影响
       return broker.startTask(
         { mode: "get_daily_report", source: HOST, agentContext: { host: HOST } },
-        3e4
+        60000,
+      );
+    }
+    case "leadsradar_dm_reply": {
+      const commentText = String(args.comment_text || "").trim();
+      if (!commentText) return { ok: false, error: { code: "BAD_ARGS", message: "缺少 comment_text（评论原文必填——私信要贴着对方评论写）" } };
+      return broker.startTask(
+        {
+          mode: "dm_reply",
+          comment_text: commentText.slice(0, 500),
+          ...(args.stage === "followup" ? { stage: "followup" } : {}),
+          ...(args.commenter_name ? { commenter_name: String(args.commenter_name).slice(0, 100) } : {}),
+          ...(args.note_title ? { note_title: String(args.note_title).slice(0, 200) } : {}),
+          platform: args.platform === "douyin" ? "douyin" : "xiaohongshu",
+          ...(args.intent_level ? { intent_level: String(args.intent_level) } : {}),
+          ...(args.lead_id ? { lead_id: String(args.lead_id) } : {}),
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        90000,
+      );
+    }
+    case "leadsradar_comment_reply": {
+      const commentText = String(args.comment_text || "").trim();
+      if (!commentText) return { ok: false, error: { code: "BAD_ARGS", message: "缺少 comment_text（评论原文必填——回评要贴着对方评论写）" } };
+      return broker.startTask(
+        {
+          mode: "comment_reply",
+          comment_text: commentText.slice(0, 500),
+          ...(args.note_title ? { note_title: String(args.note_title).slice(0, 200) } : {}),
+          ...(args.commenter_name ? { commenter_name: String(args.commenter_name).slice(0, 100) } : {}),
+          ...(args.intent_level ? { intent_level: String(args.intent_level) } : {}),
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        90000,
+      );
+    }
+    case "leadsradar_send_reply": {
+      // ⭐R96g1af 回评一键代发：插件引擎执行链（agent-tasks executeAgentSendReply → outreach.ts
+      //   handleOutreachReply）。开页+定位+注入+核验全程 ~10-60s，broker 窗 2min 兜底
+      const noteUrl = String(args.note_url || "").trim();
+      const commenterName = String(args.commenter_name || "").trim();
+      const commentText = String(args.comment_text || "").trim();
+      const replyText = String(args.reply_text || "").trim();
+      if (!/^https?:\/\//.test(noteUrl)) return { ok: false, error: { code: "BAD_ARGS", message: "缺少有效的作品链接 note_url" } };
+      if (!commenterName || !commentText || !replyText) {
+        return { ok: false, error: { code: "BAD_ARGS", message: "缺少 commenter_name / comment_text（对方评论原文）/ reply_text（确认过的成稿）——三项必填" } };
+      }
+      return broker.startTask(
+        {
+          mode: "send_reply",
+          note_url: noteUrl,
+          commenter_name: commenterName.slice(0, 100),
+          comment_text: commentText.slice(0, 500),
+          reply_text: replyText.slice(0, 1000),
+          ...(args.comment_id ? { comment_id: String(args.comment_id).slice(0, 64) } : {}),
+          ...(args.author_id ? { author_id: String(args.author_id).slice(0, 64) } : {}),
+          ...(args.platform === "douyin" || args.platform === "xiaohongshu" ? { platform: args.platform } : {}),
+          ...(args.note_title ? { note_title: String(args.note_title).slice(0, 200) } : {}),
+          ...(args.intent_level ? { intent_level: String(args.intent_level) } : {}),
+          ...(args.lead_id ? { lead_id: String(args.lead_id) } : {}),
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        120000,
+      );
+    }
+    case "leadsradar_send_dm": {
+      // ⭐R96g1af 私信一键代发：插件引擎执行链（agent-tasks executeAgentSendDm → outreach.ts
+      //   handleOutreachDm，XHS openUid 直达/DY 私信钮）。broker 窗 2min 兜底
+      const authorUrl = String(args.author_url || "").trim();
+      const dmText = String(args.dm_text || "").trim();
+      if (!/^https?:\/\//.test(authorUrl)) return { ok: false, error: { code: "BAD_ARGS", message: "缺少评论者主页链接 author_url（取采集回执评论条目的 author_url 字段）" } };
+      if (!dmText) return { ok: false, error: { code: "BAD_ARGS", message: "缺少 dm_text（用户确认过的私信成稿）" } };
+      return broker.startTask(
+        {
+          mode: "send_dm",
+          author_url: authorUrl,
+          dm_text: dmText.slice(0, 1000),
+          ...(args.author_name ? { author_name: String(args.author_name).slice(0, 100) } : {}),
+          ...(args.platform === "douyin" || args.platform === "xiaohongshu" ? { platform: args.platform } : {}),
+          ...(args.comment_text ? { comment_text: String(args.comment_text).slice(0, 500) } : {}),
+          ...(args.note_title ? { note_title: String(args.note_title).slice(0, 200) } : {}),
+          ...(args.intent_level ? { intent_level: String(args.intent_level) } : {}),
+          ...(args.lead_id ? { lead_id: String(args.lead_id) } : {}),
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        120000,
+      );
+    }
+    case "leadsradar_touch_settings": {
+      // ⭐R96g1ah 五问批 Q1：栗子触达设置——插件本地 chrome.storage 读写（与 options 触达设置页同源），
+      //   工具型任务秒回，15s 窗足够；set 需至少一个要改的字段（agent-tasks 侧校验）
+      const action = String(args.action || "get") === "set" ? "set" : "get";
+      // ⭐R96g1ao 渠道开关拆分：4 新字段；旧共用名保留兼容（= 两渠道同设，过渡窗口兜底）
+      const setFields = [
+        "fixed_reply", "fixed_dm", "reply_requirements", "dm_requirements", "reply_length", "dm_length",
+        "use_deal_doc_reply", "use_deal_doc_dm", "use_persona_doc_reply", "use_persona_doc_dm",
+        "use_deal_doc", "use_persona_doc",
+      ];
+      if (action === "set" && !setFields.some((k) => args[k] !== undefined)) {
+        return { ok: false, error: { code: "BAD_ARGS", message: "set 需至少传一个要改的字段（fixed_reply/fixed_dm/reply_requirements/dm_requirements/reply_length/dm_length/use_deal_doc_reply/use_deal_doc_dm/use_persona_doc_reply/use_persona_doc_dm）" } };
+      }
+      return broker.startTask(
+        {
+          mode: "touch_settings",
+          action,
+          ...(action === "set"
+            ? {
+                ...(args.fixed_reply !== undefined ? { fixed_reply: String(args.fixed_reply).slice(0, 500) } : {}),
+                ...(args.fixed_dm !== undefined ? { fixed_dm: String(args.fixed_dm).slice(0, 500) } : {}),
+                ...(args.reply_requirements !== undefined ? { reply_requirements: String(args.reply_requirements).slice(0, 300) } : {}),
+                ...(args.dm_requirements !== undefined ? { dm_requirements: String(args.dm_requirements).slice(0, 300) } : {}),
+                ...(args.reply_length !== undefined ? { reply_length: String(args.reply_length).slice(0, 3) } : {}),
+                ...(args.dm_length !== undefined ? { dm_length: String(args.dm_length).slice(0, 3) } : {}),
+                ...(args.use_deal_doc_reply !== undefined ? { use_deal_doc_reply: Boolean(args.use_deal_doc_reply) } : {}),
+                ...(args.use_deal_doc_dm !== undefined ? { use_deal_doc_dm: Boolean(args.use_deal_doc_dm) } : {}),
+                ...(args.use_persona_doc_reply !== undefined ? { use_persona_doc_reply: Boolean(args.use_persona_doc_reply) } : {}),
+                ...(args.use_persona_doc_dm !== undefined ? { use_persona_doc_dm: Boolean(args.use_persona_doc_dm) } : {}),
+                ...(args.use_deal_doc !== undefined ? { use_deal_doc: Boolean(args.use_deal_doc) } : {}),
+                ...(args.use_persona_doc !== undefined ? { use_persona_doc: Boolean(args.use_persona_doc) } : {}),
+              }
+            : {}),
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        15000,
+      );
+    }
+    case "leadsradar_mark_lead": {
+      const action = String(args.action || "mark_replied");
+      if (!["mark_replied", "mark_converted", "mark_lost", "reopen"].includes(action)) {
+        return { ok: false, error: { code: "BAD_ARGS", message: "action 须为 mark_replied / mark_converted / mark_lost / reopen" } };
+      }
+      return broker.startTask(
+        {
+          mode: "mark_lead",
+          action,
+          ...(args.lead_id ? { lead_id: String(args.lead_id) } : {}),
+          ...(args.text ? { text: String(args.text).slice(0, 500) } : {}),
+          ...(args.comment_text ? { comment_text: String(args.comment_text).slice(0, 500) } : {}),
+          ...(args.commenter_name ? { commenter_name: String(args.commenter_name).slice(0, 100) } : {}),
+          ...(args.note_title ? { note_title: String(args.note_title).slice(0, 200) } : {}),
+          platform: args.platform === "douyin" ? "douyin" : "xiaohongshu",
+          ...(args.intent_level ? { intent_level: String(args.intent_level) } : {}),
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        45000,
+      );
+    }
+    case "leadsradar_lead_records": {
+      // ⭐R96gar 栗子守家（⭐R96gas 更名栗子我的线索）：MCP 参数 source=own 映射成 lead_source 下发
+      //   （不占 source——那是宿主标记 HOST/local_agent，插件端 capture-risk-controller 在用）
+      return broker.startTask(
+        {
+          mode: "lead_records",
+          ...(args.status ? { status: String(args.status) } : {}),
+          ...(args.source === "own" ? { lead_source: "own" } : {}),
+          ...(args.limit ? { limit: Math.min(Math.max(Math.floor(Number(args.limit)) || 50, 1), 200) } : {}),
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        45000,
+      );
+    }
+    // ⭐R96ew 平台登录账号现核（closer 1.4.10「回复账号 ⭐已核」数据源）：查已打开的小红书/抖音页读
+    //   当前登录账号——零采集不占风控限额（工具型任务秒回，10s 超时足够）
+    case "leadsradar_whoami": {
+      // ⭐R96ey open_url：没开平台页时插件代开该作品页再读（closer 传作品链接）——代开+等 boot 约
+      //   5-8 秒，超时从 10s 放宽到 15s
+      return broker.startTask(
+        {
+          mode: "whoami",
+          openUrl: typeof args?.open_url === "string" ? args.open_url : undefined,
+          source: HOST,
+          agentContext: { host: HOST },
+        },
+        15000,
       );
     }
     case "leadsradar_query_local_data": {
       const querySource = String(args.source || "");
       if (!["works", "notes", "accounts", "comments", "reports"].includes(querySource)) {
-        return { ok: false, error: { code: "BAD_ARGS", message: "source \u987B\u4E3A works / notes / accounts / comments / reports" } };
+        return { ok: false, error: { code: "BAD_ARGS", message: "source 须为 works / notes / accounts / comments / reports" } };
       }
       if (querySource === "comments" && !/^https?:\/\//.test(String(args.note_url || ""))) {
-        return { ok: false, error: { code: "BAD_ARGS", message: "source=comments \u9700\u63D0\u4F9B\u6709\u6548\u7684\u7B14\u8BB0 note_url" } };
+        return { ok: false, error: { code: "BAD_ARGS", message: "source=comments 需提供有效的笔记 note_url" } };
       }
       const limit = Math.min(Math.max(Math.floor(Number(args.limit) || 50), 1), 200);
-      const platform = args.platform === "douyin" ? "douyin" : args.platform === "xiaohongshu" ? "xiaohongshu" : "";
+      const platform =
+        args.platform === "douyin" ? "douyin" : args.platform === "xiaohongshu" ? "xiaohongshu" : "";
       return broker.startTask(
         {
           mode: "query_local_data",
@@ -5158,46 +2730,92 @@ async function callTool(name, args) {
           noteUrl: String(args.note_url || "").trim(),
           limit,
           source: HOST,
-          agentContext: { host: HOST }
+          agentContext: { host: HOST },
         },
-        3e4
+        30000,
       );
     }
     case "leadsradar_claim_pending_result": {
+      // ⭐B7b-P1 结果认领闭环：走普通任务通道（mode=claim_pending_result），插件侧持有
+      // pendingResults 真源——卫星模式经 device.task.start 中转自动兼容，零新协议消息
       const claimTaskId = String(args.taskId || "").trim();
       return broker.startTask(
         {
           mode: "claim_pending_result",
-          ...claimTaskId ? { claimTaskId } : { claimAll: true },
+          ...(claimTaskId ? { claimTaskId } : { claimAll: true }),
           source: HOST,
-          agentContext: { host: HOST }
+          agentContext: { host: HOST },
         },
-        3e4
+        30000,
       );
     }
+    case "leadsradar_get_latest_skills": {
+      // ⭐R79 云端技能下发：技能库装在宿主手里（无写入 API），适配器只能把最新 SKILL.md 全文
+      //   递到对话让用户粘贴覆盖——传 name 拉单技能全文；不传返回版本表+更新指引
+      const skillName = String(args.name || "").trim();
+      if (!skillName) {
+        // ⭐R96g1be 不传 name=宿主拉新/对照入口，await 实时刷表（显式拉新语义值得等）——表与 content
+        //   同源 CDN，彻底消灭「表旧文新」的对照矛盾（表说 1.2.70 文却是 1.2.75）
+        await refreshSkillsLatestLive();
+        return {
+          ok: true,
+          note: "传 name（radar/insights/creator/closer/helper）取该技能最新 SKILL.md 全文：宿主有写文件能力（coding 宿主）直接把 content 写入该技能 SKILL.md 原路径覆盖即自动更新；纯对话宿主展示给用户整体复制按宿主技能安装方式覆盖。",
+          skills_latest: skillsLatestLive.table,
+          adapter_update: selfUpdate.state,
+        };
+      }
+      if (!SKILL_NAMES.includes(skillName)) {
+        return { ok: false, error: { code: "BAD_ARGS", message: "name 须为 radar / insights / creator / closer / helper" } };
+      }
+      const md = await fetchLatestSkillMd(skillName);
+      if (!md) {
+        return { ok: false, error: { code: "FETCH_FAILED", message: `云端拉取 leadsradar-${skillName} SKILL.md 失败（unpkg 与 jsdelivr 双源均未命中——npm 可能尚未发布新版）——稍后再试，或去插件设置页「智能体连接」重新下载技能文件` } };
+      }
+      return {
+        ok: true,
+        name: skillName,
+        version: md.version,
+        latestKnown: skillsLatestLive.table[skillName] || null, // ⭐R96g1be 表源同 CDN 缓存
+        content: md.content,
+        note: `以上是 leadsradar-${skillName} SKILL.md 全文（frontmatter version=${md.version || "?"}）——你有写文件能力（coding 宿主）就把 content 全文写入该技能 SKILL.md 原路径覆盖（即当初安装时写的文件），写完报「已自动更新到 v${md.version || "?"}」；纯对话宿主才把内容展示给用户整体复制、按宿主技能安装方式覆盖。`,
+      };
+    }
     default:
-      return { ok: false, error: { code: "UNKNOWN_TOOL", message: `\u672A\u77E5\u5DE5\u5177 ${name}` } };
+      return { ok: false, error: { code: "UNKNOWN_TOOL", message: `未知工具 ${name}` } };
   }
 }
-var MCP_PROTOCOL_VERSION = "2025-03-26";
+
+/* ================= STDIO MCP server（换行分隔 JSON-RPC 2.0） ================= */
+
+const MCP_PROTOCOL_VERSION = "2025-03-26";
+
 function writeRpc(msg) {
   process.stdout.write(JSON.stringify(msg) + "\n");
 }
+
+function rpcResult(id, result) {
+  writeRpc({ jsonrpc: "2.0", id, result });
+}
+
+function rpcError(id, code, message) {
+  writeRpc({ jsonrpc: "2.0", id, error: { code, message } });
+}
+
+/* ================= MCP 请求分发（⭐r90c stdio 与 HTTP 两传输共用一 dispatch） ================= */
+
 async function dispatchRpc(req) {
-  if (req.id === void 0 || req.id === null) return null;
+  if (req.id === undefined || req.id === null) return null; // notification（initialized/cancelled 等）无需应答
   const { method, params = {} } = req;
   switch (method) {
     case "initialize":
       return {
-        jsonrpc: "2.0",
-        id: req.id,
+        jsonrpc: "2.0", id: req.id,
         result: {
           protocolVersion: params.protocolVersion || MCP_PROTOCOL_VERSION,
           capabilities: { tools: {} },
-          serverInfo: { name: "leadsradar-agent-adapter", version: ADAPTER_VERSION, title: "\u63A2\u6817 Agent \u9002\u914D\u5668" },
-          instructions: MCP_INSTRUCTIONS
-          // ⭐r82 呈现规范随 initialize 注入宿主系统提示
-        }
+          serverInfo: { name: "leadsradar-agent-adapter", version: ADAPTER_VERSION, title: "探栗MCP" },
+          instructions: MCP_INSTRUCTIONS, // ⭐r82 呈现规范随 initialize 注入宿主系统提示
+        },
       };
     case "ping":
       return { jsonrpc: "2.0", id: req.id, result: {} };
@@ -5213,12 +2831,11 @@ async function dispatchRpc(req) {
         response = { ok: false, error: { code: "TOOL_CRASH", message: String(err?.message || err) } };
       }
       return {
-        jsonrpc: "2.0",
-        id: req.id,
+        jsonrpc: "2.0", id: req.id,
         result: {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
-          isError: response && response.ok === false
-        }
+          isError: response && response.ok === false,
+        },
       };
     }
     case "resources/list":
@@ -5229,7 +2846,9 @@ async function dispatchRpc(req) {
       return { jsonrpc: "2.0", id: req.id, error: { code: -32601, message: `method not found: ${method}` } };
   }
 }
-var httpServer = null;
+
+let httpServer = null; // ⭐r90c HTTP 模式句柄（exit 时一并关闭）
+
 if (!HTTP_MODE) {
   const rl = createInterface({ input: process.stdin });
   rl.on("line", (line) => {
@@ -5239,38 +2858,29 @@ if (!HTTP_MODE) {
     try {
       req = JSON.parse(text);
     } catch {
-      return;
+      return; // 非 JSON 行直接忽略
     }
     Promise.resolve(dispatchRpc(req)).then((resp) => {
       if (resp) writeRpc(resp);
     });
   });
-  log(`[lf-agent] MCP STDIO server \u5DF2\u542F\u52A8\uFF08host=${HOST} device="${DEVICE_NAME}"\uFF09`);
+  log(`[lf-agent] MCP STDIO server 已启动（host=${HOST} device="${DEVICE_NAME}"）`);
 } else {
+  /* ⭐r90c HTTP 模式（扣子桌面端）：MCP Streamable HTTP 的 stateless 简化实现——
+     POST JSON-RPC → 单 JSON 响应（不建会话不返 Mcp-Session-Id、不做 SSE 推送，GET/DELETE 405）。
+     CORS 全开：桌面端（Electron）带 Origin 发请求 + preflight，Allow-Headers 覆盖 MCP 会话/协议头。 */
   const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, GET, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "content-type, accept, authorization, mcp-session-id, mcp-protocol-version, last-event-id",
     "Access-Control-Expose-Headers": "mcp-session-id",
-    "Access-Control-Max-Age": "86400"
+    "Access-Control-Max-Age": "86400",
   };
   httpServer = createHttpServer((req, res) => {
     const url = (req.url || "").split("?")[0];
-    if (url !== "/mcp" && url !== "/") {
-      res.writeHead(404, CORS_HEADERS);
-      res.end();
-      return;
-    }
-    if (req.method === "OPTIONS") {
-      res.writeHead(204, CORS_HEADERS);
-      res.end();
-      return;
-    }
-    if (req.method !== "POST") {
-      res.writeHead(405, { ...CORS_HEADERS, Allow: "POST, OPTIONS" });
-      res.end("method not supported");
-      return;
-    }
+    if (url !== "/mcp" && url !== "/") { res.writeHead(404, CORS_HEADERS); res.end(); return; }
+    if (req.method === "OPTIONS") { res.writeHead(204, CORS_HEADERS); res.end(); return; }
+    if (req.method !== "POST") { res.writeHead(405, { ...CORS_HEADERS, Allow: "POST, OPTIONS" }); res.end("method not supported"); return; }
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
     req.on("end", () => {
@@ -5283,32 +2893,29 @@ if (!HTTP_MODE) {
         return;
       }
       Promise.resolve(dispatchRpc(body)).then((resp) => {
-        if (!resp) {
-          res.writeHead(202, CORS_HEADERS);
-          res.end();
-          return;
-        }
+        if (!resp) { res.writeHead(202, CORS_HEADERS); res.end(); return; } // notification → 202 Accepted
         res.writeHead(200, { ...CORS_HEADERS, "Content-Type": "application/json" });
         res.end(JSON.stringify(resp));
       });
     });
   });
   httpServer.listen(HTTP_PORT, "127.0.0.1", () => {
-    log(`[lf-agent] MCP HTTP server \u5DF2\u542F\u52A8 http://127.0.0.1:${HTTP_PORT}/mcp\uFF08host=${HOST} device="${DEVICE_NAME}"\uFF0CStreamable HTTP stateless\uFF1APOST \u5373\u7B54\uFF0C\u65E0\u4F1A\u8BDD\u65E0\u63A8\u9001\uFF09`);
+    log(`[lf-agent] MCP HTTP server 已启动 http://127.0.0.1:${HTTP_PORT}/mcp（host=${HOST} device="${DEVICE_NAME}"，Streamable HTTP stateless：POST 即答，无会话无推送）`);
   });
+  // ⭐r90c 端口占用防裸崩：重复启动第二个 --http 实例时 EADDRINUSE 会抛 uncaught——先跑的实例仍在服务，本进程友好退出
   httpServer.on("error", (err) => {
-    log(`[lf-agent] HTTP \u7AEF\u53E3 ${HTTP_PORT} \u542F\u52A8\u5931\u8D25\uFF1A${err?.code || err?.message || err}\u2014\u2014\u82E5\u5DF2\u6709\u4E00\u4E2A\u5B9E\u4F8B\u5728\u8DD1\uFF0C\u5B83\u4ECD\u5728\u6B63\u5E38\u670D\u52A1\uFF08\u6263\u5B50\u8FDE\u7684\u5C31\u662F\u5B83\uFF09\uFF0C\u65E0\u9700\u91CD\u590D\u542F\u52A8\uFF1B\u786E\u9700\u6539\u7AEF\u53E3\u7528 LEADSRADAR_AGENT_HTTP_PORT\u3002\u672C\u8FDB\u7A0B\u9000\u51FA\u3002`);
+    log(`[lf-agent] HTTP 端口 ${HTTP_PORT} 启动失败：${err?.code || err?.message || err}——若已有一个实例在跑，它仍在正常服务（扣子连的就是它），无需重复启动；确需改端口用 LEADSRADAR_AGENT_HTTP_PORT。本进程退出。`);
     process.exit(1);
   });
 }
-log(`[lf-agent] \u5DE5\u5177\uFF1A${TOOLS.map((t) => t.name).join(", ")}`);
+
+log(`[lf-agent] 工具：${TOOLS.map((t) => t.name).join(", ")}`);
+
+// ⭐R79 启动后台异步自检更新（不阻塞起服；节流/静默/只升不降三纪律见 maybeSelfUpdate 注释；
+//   探活补检兜底挂在 connection_status——升级挂「栗子在吗」常径，用户零感知）
+void maybeSelfUpdate();
+
 process.on("exit", () => {
-  try {
-    broker.wss.close();
-  } catch {
-  }
-  try {
-    if (httpServer) httpServer.close();
-  } catch {
-  }
+  try { broker.wss.close(); } catch { /* noop */ }
+  try { if (httpServer) httpServer.close(); } catch { /* noop */ }
 });
