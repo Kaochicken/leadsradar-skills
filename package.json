@@ -1,6 +1,6 @@
 {
   "name": "leadsradar-agent",
-  "version": "1.0.158",
+  "version": "1.0.159",
   "scripts": {
     "publish:ready": "node publish-ready.mjs"
   },
